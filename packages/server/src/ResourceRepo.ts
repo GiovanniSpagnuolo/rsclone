@@ -1,10 +1,8 @@
 //
-//  ResourceRepo.swift
-//  
+//  ResourceRepo.ts
 //
 //  Created by Giovanni Spagnuolo on 2/10/26.
 //
-
 
 import { db } from "./db.js";
 import type { ItemId, ResourceType, SkillName } from "@rsclone/shared/protocol";
@@ -23,6 +21,14 @@ export type ResourceDef = {
   ticksMax: number;
 
   respawnMs: number;
+
+  // Client rendering
+  mesh: string;
+  depletedMesh: string;
+
+  // Server movement/pathing behavior.
+  // "block" means the tile is never walkable (even when depleted)
+  collision: "none" | "block";
 
   meta: Record<string, unknown>;
 };
@@ -45,7 +51,12 @@ type ResRow = {
   ticks_min: number;
   ticks_max: number;
   respawn_ms: number;
+  mesh: string;
+  depleted_mesh: string;
+  collision: string;
   meta_json: string;
+  created_at?: number;
+  updated_at?: number;
 };
 
 type ReqRow = { skill: string; level: number };
@@ -81,6 +92,15 @@ function clampInt(n: any, min: number, max: number) {
   return Math.max(min, Math.min(max, v));
 }
 
+function asCollision(s: string): "none" | "block" {
+  return s === "block" ? "block" : "none";
+}
+
+function normString(v: any, maxLen = 200) {
+  const s = String(v ?? "").trim();
+  return s.length > maxLen ? s.slice(0, maxLen) : s;
+}
+
 export class ResourceRepo {
   private cacheById = new Map<string, ResourceDef>();
   private cacheDefaultByType = new Map<ResourceType, ResourceDef>();
@@ -92,37 +112,6 @@ export class ResourceRepo {
     this.cacheDefaultByType.clear();
     this.lootCache.clear();
     this.reqCache.clear();
-  }
-
-  private loadDefaultForTypeFromDb(resourceType: ResourceType): ResourceDef | null {
-    // Strategy: pick the first row for that type ordered by id.
-    // Later we can add an explicit "is_default" column or "tier" column.
-    const row = db
-      .prepare(
-        `SELECT id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms, meta_json
-         FROM resource_defs
-         WHERE resource_type = ?
-         ORDER BY id ASC
-         LIMIT 1`
-      )
-      .get(resourceType) as ResRow | undefined;
-
-    if (!row) return null;
-
-    return this.rowToDef(row);
-  }
-
-  private loadByIdFromDb(id: string): ResourceDef | null {
-    const row = db
-      .prepare(
-        `SELECT id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms, meta_json
-         FROM resource_defs
-         WHERE id = ?`
-      )
-      .get(id) as ResRow | undefined;
-
-    if (!row) return null;
-    return this.rowToDef(row);
   }
 
   private rowToDef(row: ResRow): ResourceDef {
@@ -145,8 +134,42 @@ export class ResourceRepo {
       ticksMin,
       ticksMax,
       respawnMs: clampInt(row.respawn_ms, 0, 1_000_000_000),
+      mesh: String(row.mesh ?? ""),
+      depletedMesh: String(row.depleted_mesh ?? ""),
+      collision: asCollision(String(row.collision ?? "none")),
       meta: safeJsonParse(row.meta_json ?? "{}")
     };
+  }
+
+  private loadDefaultForTypeFromDb(resourceType: ResourceType): ResourceDef | null {
+    // Strategy: pick the first row for that type ordered by id.
+    const row = db
+      .prepare(
+        `SELECT id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms,
+                mesh, depleted_mesh, collision, meta_json
+         FROM resource_defs
+         WHERE resource_type = ?
+         ORDER BY id ASC
+         LIMIT 1`
+      )
+      .get(resourceType) as ResRow | undefined;
+
+    if (!row) return null;
+    return this.rowToDef(row);
+  }
+
+  private loadByIdFromDb(id: string): ResourceDef | null {
+    const row = db
+      .prepare(
+        `SELECT id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms,
+                mesh, depleted_mesh, collision, meta_json
+         FROM resource_defs
+         WHERE id = ?`
+      )
+      .get(id) as ResRow | undefined;
+
+    if (!row) return null;
+    return this.rowToDef(row);
   }
 
   /**
@@ -174,6 +197,84 @@ export class ResourceRepo {
 
     this.cacheById.set(id, def);
     return def;
+  }
+
+  listDefs(): ResourceDef[] {
+    const rows = db
+      .prepare(
+        `SELECT id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms,
+                mesh, depleted_mesh, collision, meta_json
+         FROM resource_defs
+         ORDER BY id ASC`
+      )
+      .all() as ResRow[];
+
+    const defs = rows.map((r) => this.rowToDef(r));
+    for (const d of defs) this.cacheById.set(d.id, d);
+    return defs;
+  }
+
+  /**
+   * Upsert defs from the admin editor.
+   * NOTE: collision="block" means the tile stays blocked even when depleted.
+   */
+  saveDefs(defs: ResourceDef[]) {
+    const now = Date.now();
+
+    const upsert = db.prepare(`
+      INSERT INTO resource_defs
+        (id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms,
+         mesh, depleted_mesh, collision, created_at, updated_at, meta_json)
+      VALUES
+        (@id, @resource_type, @name, @skill, @xp_gain, @ticks_min, @ticks_max, @respawn_ms,
+         @mesh, @depleted_mesh, @collision, @created_at, @updated_at, @meta_json)
+      ON CONFLICT(id) DO UPDATE SET
+        resource_type=excluded.resource_type,
+        name=excluded.name,
+        skill=excluded.skill,
+        xp_gain=excluded.xp_gain,
+        ticks_min=excluded.ticks_min,
+        ticks_max=excluded.ticks_max,
+        respawn_ms=excluded.respawn_ms,
+        mesh=excluded.mesh,
+        depleted_mesh=excluded.depleted_mesh,
+        collision=excluded.collision,
+        updated_at=excluded.updated_at,
+        meta_json=excluded.meta_json
+    `);
+
+    const tx = db.transaction(() => {
+      for (const d of defs) {
+        const rt = d.resourceType;
+        const sk = d.skill;
+
+        // normalize
+        const id = normString(d.id, 80);
+        if (!id) continue;
+
+        upsert.run({
+          id,
+          resource_type: rt,
+          name: normString(d.name, 120) || id,
+          skill: sk,
+          xp_gain: clampInt(d.xpGain, 0, 1_000_000),
+          ticks_min: clampInt(d.ticksMin, 1, 10_000),
+          ticks_max: clampInt(d.ticksMax, clampInt(d.ticksMin, 1, 10_000), 10_000),
+          respawn_ms: clampInt(d.respawnMs, 0, 1_000_000_000),
+          mesh: normString(d.mesh, 200),
+          depleted_mesh: normString(d.depletedMesh, 200),
+          collision: d.collision === "block" ? "block" : "none",
+          created_at: now,
+          updated_at: now,
+          meta_json: JSON.stringify(d.meta ?? {})
+        });
+      }
+    });
+
+    tx();
+
+    // defs changed => clear caches so sim/admin snapshot sees new values immediately
+    this.clearCache();
   }
 
   getRequirements(resourceId: string): ResourceRequirement[] {
@@ -245,14 +346,11 @@ export class ResourceRepo {
       pick -= r.weight;
       if (pick < 0) {
         const qty =
-          r.minQty === r.maxQty
-            ? r.minQty
-            : r.minQty + Math.floor(rng() * (r.maxQty - r.minQty + 1));
+          r.minQty === r.maxQty ? r.minQty : r.minQty + Math.floor(rng() * (r.maxQty - r.minQty + 1));
         return { itemId: r.itemId, qty };
       }
     }
 
-    // should never happen, but fail safe
     const last = table[table.length - 1];
     return { itemId: last.itemId, qty: last.minQty };
   }

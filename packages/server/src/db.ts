@@ -10,10 +10,12 @@ fs.mkdirSync(path.dirname(abs), { recursive: true });
 export const db = new Database(abs);
 db.pragma("journal_mode = WAL");
 
-function ensureColumn(table: string, column: string, ddl: string) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  const has = cols.some((c) => c.name === column);
-  if (!has) db.exec(ddl);
+function tryAlter(sql: string) {
+  try {
+    db.exec(sql);
+  } catch {
+    // ignore (most likely column already exists)
+  }
 }
 
 export function migrate() {
@@ -24,8 +26,6 @@ export function migrate() {
       username TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       created_at INTEGER NOT NULL
-      -- rights is added via migration below for existing DBs,
-      -- and included in CREATE for fresh DBs by ALTER below if needed.
     );
 
     CREATE TABLE IF NOT EXISTS characters (
@@ -100,20 +100,35 @@ export function migrate() {
     -- ---------------------------
     -- Resources catalog (authoritative)
     -- ---------------------------
+    -- This is the definition of a resource node type: tree, rock, fishing_spot, etc.
+    -- You can make variants like "oak_tree", "copper_rock", "shrimp_spot".
     CREATE TABLE IF NOT EXISTS resource_defs (
       id TEXT PRIMARY KEY,
 
+      -- Keep this aligned with your ResourceType union in protocol for now
+      -- (later we can loosen it to string like ItemId).
       resource_type TEXT NOT NULL,   -- "tree" | "rock" | "fishing_spot"
       name TEXT NOT NULL,
 
+      -- Which skill this node uses for the action
       skill TEXT NOT NULL,           -- "woodcutting" | "mining" | "fishing"
 
       xp_gain INTEGER NOT NULL DEFAULT 0,
 
+      -- Action duration in ticks (server tick loop); pick a value between min/max each action
       ticks_min INTEGER NOT NULL DEFAULT 4,
       ticks_max INTEGER NOT NULL DEFAULT 6,
 
       respawn_ms INTEGER NOT NULL DEFAULT 8000,
+
+      -- Visuals (client)
+      mesh TEXT NOT NULL DEFAULT '',
+      depleted_mesh TEXT NOT NULL DEFAULT '',
+
+      -- Collision behavior (server)
+      -- "block" means the tile is never walkable (even when depleted)
+      -- so players can't stand on it when it respawns.
+      collision TEXT NOT NULL DEFAULT 'none',
 
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -123,6 +138,7 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_resource_defs_type ON resource_defs(resource_type);
     CREATE INDEX IF NOT EXISTS idx_resource_defs_skill ON resource_defs(skill);
 
+    -- Skill requirements for harvesting this node (normalized)
     CREATE TABLE IF NOT EXISTS resource_requirements (
       resource_id TEXT NOT NULL,
       skill TEXT NOT NULL,
@@ -132,6 +148,9 @@ export function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_resource_requirements_skill ON resource_requirements(skill);
 
+    -- Loot table rows (normalized)
+    -- "weight" implements weighted random selection.
+    -- qty is random between min_qty..max_qty when this row is selected.
     CREATE TABLE IF NOT EXISTS resource_loot (
       resource_id TEXT NOT NULL,
       item_id TEXT NOT NULL,
@@ -141,61 +160,21 @@ export function migrate() {
 
       PRIMARY KEY (resource_id, item_id),
       FOREIGN KEY(resource_id) REFERENCES resource_defs(id) ON DELETE CASCADE
+      -- Optionally add FOREIGN KEY(item_id) REFERENCES items(id) later
     );
     CREATE INDEX IF NOT EXISTS idx_resource_loot_resource ON resource_loot(resource_id);
-
-    -- ---------------------------
-    -- Resource spawns (for in-game map editor)
-    -- ---------------------------
-    -- This table is the "auth source of truth" for placed resources.
-    -- The sim/world can load these and render/simulate them.
-    CREATE TABLE IF NOT EXISTS resource_spawns (
-      id TEXT PRIMARY KEY,
-
-      def_id TEXT NOT NULL,
-      x INTEGER NOT NULL,
-      y INTEGER NOT NULL,
-
-      enabled INTEGER NOT NULL DEFAULT 1,
-
-      placed_by_user_id TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-
-      FOREIGN KEY(def_id) REFERENCES resource_defs(id) ON DELETE RESTRICT
-    );
-
-    -- Prevent multiple resources on the same tile:
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_resource_spawns_xy ON resource_spawns(x, y);
-    CREATE INDEX IF NOT EXISTS idx_resource_spawns_def ON resource_spawns(def_id);
-
-    -- ---------------------------
-    -- Admin audit log (optional but extremely useful)
-    -- ---------------------------
-    CREATE TABLE IF NOT EXISTS audit_log (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      action TEXT NOT NULL,
-      entity_type TEXT NOT NULL,
-      entity_id TEXT,
-      before_json TEXT,
-      after_json TEXT,
-      created_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
-    CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id);
 
     CREATE INDEX IF NOT EXISTS idx_characters_user_id ON characters(user_id);
   `);
 
-  // ---- Migrations for existing DBs ----
-
-  // users.rights (rights >= 3 => admin)
-  ensureColumn(
-    "users",
-    "rights",
-    `ALTER TABLE users ADD COLUMN rights INTEGER NOT NULL DEFAULT 0`
-  );
+  // ---------------------------------
+  // Lightweight migrations (ALTER TABLE)
+  // ---------------------------------
+  // Resource defs: visuals + collision behavior.
+  // NOTE: collision applies regardless of alive/depleted state so players can't stand on the tile.
+  tryAlter(`ALTER TABLE resource_defs ADD COLUMN mesh TEXT NOT NULL DEFAULT ''`);
+  tryAlter(`ALTER TABLE resource_defs ADD COLUMN depleted_mesh TEXT NOT NULL DEFAULT ''`);
+  tryAlter(`ALTER TABLE resource_defs ADD COLUMN collision TEXT NOT NULL DEFAULT 'none'`);
 
   // Backfill updated_at if old rows existed
   db.exec(`
@@ -207,7 +186,7 @@ export function migrate() {
   const now = Date.now();
 
   // ---------------------------
-  // Seed starter items/resources (safe to run repeatedly)
+  // Seed starter items used by loot
   // ---------------------------
   const seedItem = db.prepare(`
     INSERT OR IGNORE INTO items
@@ -216,11 +195,14 @@ export function migrate() {
       (@id, @name, @item_type, @equip_slot, @stackable, @stack_limit, @splittable, @consumable, @created_at, @updated_at, @meta_json)
   `);
 
+  // ---------------------------
+  // Seed starter resources
+  // ---------------------------
   const seedRes = db.prepare(`
     INSERT OR IGNORE INTO resource_defs
-      (id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms, created_at, updated_at, meta_json)
+      (id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms, mesh, depleted_mesh, collision, created_at, updated_at, meta_json)
     VALUES
-      (@id, @resource_type, @name, @skill, @xp_gain, @ticks_min, @ticks_max, @respawn_ms, @created_at, @updated_at, @meta_json)
+      (@id, @resource_type, @name, @skill, @xp_gain, @ticks_min, @ticks_max, @respawn_ms, @mesh, @depleted_mesh, @collision, @created_at, @updated_at, @meta_json)
   `);
 
   const seedResLoot = db.prepare(`
@@ -284,6 +266,9 @@ export function migrate() {
       ticks_min: 4,
       ticks_max: 6,
       respawn_ms: 8000,
+      mesh: "tree_basic",
+      depleted_mesh: "tree_stump",
+      collision: "block",
       created_at: now,
       updated_at: now,
       meta_json: "{}"
@@ -298,6 +283,9 @@ export function migrate() {
       ticks_min: 5,
       ticks_max: 7,
       respawn_ms: 12000,
+      mesh: "rock_basic",
+      depleted_mesh: "rock_depleted",
+      collision: "block",
       created_at: now,
       updated_at: now,
       meta_json: "{}"
@@ -312,12 +300,15 @@ export function migrate() {
       ticks_min: 3,
       ticks_max: 5,
       respawn_ms: 6000,
+      mesh: "fishing_spot_basic",
+      depleted_mesh: "fishing_spot_depleted",
+      collision: "none",
       created_at: now,
       updated_at: now,
       meta_json: "{}"
     });
 
-    // Loot tables (one row each for now)
+    // Loot tables
     seedResLoot.run({
       resource_id: "tree_basic",
       item_id: "logs",
