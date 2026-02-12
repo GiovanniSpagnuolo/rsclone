@@ -6,6 +6,7 @@ import { startHttpServer } from "./http.js";
 import { verifyToken } from "./auth.js";
 import { getDefaultCharacterForUser, rowToSkills, saveCharacterState } from "./characterRepo.js";
 import { Sim, type SimEvent } from "./sim.ts";
+import { TerrainRepo } from "./TerrainRepo.js";
 
 import type {
   ChatLine,
@@ -30,6 +31,8 @@ const TICK_RATE = 10;
 const INV_SLOTS = 30;
 
 startHttpServer(PORT_HTTP);
+
+const terrainRepo = new TerrainRepo();
 
 // ----------------- Inventory persistence -----------------
 
@@ -642,6 +645,12 @@ wss.on("connection", (ws, req) => {
   send(ws, { t: "welcome", id: userId, tickRate: TICK_RATE });
   send(ws, { t: "you", skills, inventory });
   send(ws, { t: "chatHistory", lines: chatHistory });
+    send(ws, { t: "materials", list: terrainRepo.getMaterials() });
+    
+    const currentTerrain = terrainRepo.getAllPatches();
+      if (currentTerrain.length > 0) {
+          send(ws, { t: "terrainUpdate", patches: currentTerrain });
+      }
 
   const joinLine: ChatLine = {
     id: randomUUID(),
@@ -771,6 +780,8 @@ wss.on("connection", (ws, req) => {
               if (skillsNow && invNow) sendTo(p.userId, { t: "you", skills: skillsNow, inventory: invNow });
             }
           }
+            
+            
 
           sendTo(userId, { t: "adminAck", op: "adminUpdatePlayer" });
           sendTo(userId, { t: "adminSnapshot", ...buildAdminSnapshot() });
@@ -783,7 +794,26 @@ wss.on("connection", (ws, req) => {
         sendTo(userId, { t: "adminError", error: err?.message ?? "Admin op failed." });
         return;
       }
+        
+        
+        
+        
     }
+      
+      if (msg.t === "adminTerrainPaint") {
+         if (!requireAdmin(userId)) return;
+         terrainRepo.applyPatches(msg.patches);
+         // Broadcast to everyone so they see the change live!
+         broadcast({ t: "terrainUpdate", patches: msg.patches });
+         return;
+      }
+
+      if (msg.t === "adminUpsertMaterial") {
+         if (!requireAdmin(userId)) return;
+         terrainRepo.upsertMaterial(msg.mat);
+         broadcast({ t: "materials", list: terrainRepo.getMaterials() });
+         return;
+      }
 
     // ---------------- Chat ----------------
     if (msg.t === "chat") {
@@ -823,29 +853,31 @@ wss.on("connection", (ws, req) => {
     }
   });
 
-  ws.on("close", () => {
-    // Save on disconnect
-    const p = sim.players.get(userId);
-    const skillsNow = sim.getSkills(userId);
-    const invNow = sim.getInventory(userId);
-    if (p && skillsNow && invNow) {
-      saveCharacterState(chr.id, p.pos.x, p.pos.y, skillsNow);
-      saveInventory(chr.id, invNow);
-    }
+    ws.on("close", () => {
+        // FIX: Use sim.getPlayer() instead of sim.players.get()
+        const p = sim.getPlayer(userId);
+        
+        const skillsNow = sim.getSkills(userId);
+        const invNow = sim.getInventory(userId);
+        
+        if (p && skillsNow && invNow) {
+          saveCharacterState(chr.id, p.pos.x, p.pos.y, skillsNow);
+          saveInventory(chr.id, invNow);
+        }
 
-    conns.delete(userId);
-    sim.removePlayer(userId);
+        conns.delete(userId);
+        sim.removePlayer(userId);
 
-    const leaveLine: ChatLine = {
-      id: randomUUID(),
-      ts: Date.now(),
-      from: { id: "system", name: "System" },
-      text: `${username} disconnected.`
-    };
-    pushChat(leaveLine);
-    broadcast({ t: "chat", line: leaveLine });
-  });
-});
+        const leaveLine: ChatLine = {
+          id: randomUUID(),
+          ts: Date.now(),
+          from: { id: "system", name: "System" },
+          text: `${username} disconnected.`
+        };
+        pushChat(leaveLine);
+        broadcast({ t: "chat", line: leaveLine });
+      });
+    });
 
 // packages/server/src/index.ts
 

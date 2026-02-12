@@ -1,5 +1,5 @@
-export const WORLD_W = 256;
-export const WORLD_H = 256;
+export const WORLD_W = 2560;
+export const WORLD_H = 2560;
 export const CHUNK_SIZE = 16;
 
 // 0 = walkable, 1 = blocked

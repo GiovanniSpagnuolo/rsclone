@@ -145,6 +145,26 @@ export function migrate() {
       size INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+  
+  -- NEW: Terrain Materials
+      CREATE TABLE IF NOT EXISTS materials (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        color INTEGER NOT NULL DEFAULT 0x55ff55,
+        texture_name TEXT, -- For future use
+        created_at INTEGER NOT NULL,
+        meta_json TEXT NOT NULL DEFAULT '{}'
+      );
+
+      -- NEW: Terrain Data (Sparse storage - if a tile is missing, assume height 0 / default mat)
+      CREATE TABLE IF NOT EXISTS tiles (
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        height REAL NOT NULL DEFAULT 0,
+        mat_id TEXT,
+        PRIMARY KEY (x, y)
+      ); 
+  
   `);
 
   // Migrations
@@ -208,4 +228,15 @@ function seedDefaults() {
     insertSpawn.run("spawn_r2", 16, 10, "rock_basic");
     insertSpawn.run("spawn_f1", 10, 15, "fishing_spot_basic");
   }
+    
+    
+    const hasMats = db.prepare("SELECT 1 FROM materials LIMIT 1").get();
+      if (!hasMats) {
+        const insertMat = db.prepare("INSERT INTO materials (id, name, color, created_at) VALUES (?, ?, ?, ?)");
+        insertMat.run("grass", "Grass", 0x4caf50, now); // Green
+        insertMat.run("dirt", "Dirt", 0x795548, now);   // Brown
+        insertMat.run("stone", "Stone", 0x9e9e9e, now); // Grey
+        insertMat.run("water", "Waterbed", 0x2196f3, now); // Blueish
+      }
+    
 }

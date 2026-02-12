@@ -4,6 +4,7 @@ import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils";
 import type { PlayerState, ResourceState } from "@rsclone/shared/protocol";
 import { WORLD_W, WORLD_H, makeCollision } from "@rsclone/shared/world";
 import { CameraRig } from "./CameraRig";
+import { TerrainMesh } from "./TerrainMesh";
 
 // --- TYPES ---
 export type EntityMesh = {
@@ -191,11 +192,9 @@ export function createGame3d(
   scene.add(dir);
 
   // 1. Ground
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_W, WORLD_H), new THREE.MeshStandardMaterial({ color: 0x3e2723, roughness: 1.0 }));
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.set(WORLD_W / 2, -0.01, WORLD_H / 2);
-  ground.receiveShadow = true;
-  scene.add(ground);
+    // --- NEW: Terrain ---
+      const terrain = new TerrainMesh();
+      scene.add(terrain.mesh);
 
   // 2. Water
   const collision = makeCollision();
@@ -403,7 +402,7 @@ export function createGame3d(
               spawnMarker(hitEntity.position.x, hitEntity.position.z, 0xff0000);
           }
       } else {
-          const groundHits = raycaster.intersectObject(ground);
+          const groundHits = raycaster.intersectObject(terrain.mesh);
           if (groundHits.length > 0) {
               const pt = groundHits[0].point;
               const tx = Math.floor(pt.x);
@@ -448,7 +447,7 @@ export function createGame3d(
           }
 
           if (tool.mode === "place" || tool.mode === "remove") {
-              const groundHits = raycaster.intersectObject(ground);
+              const groundHits = raycaster.intersectObject(terrain.mesh);
               
               // DEBUG LOG: See if we are hitting the ground
               console.log("Ground hits:", groundHits.length);
@@ -536,6 +535,24 @@ export function createGame3d(
           else if (msg.t === "adminSnapshot") (window as any).__adminSnapshot?.(msg);
           else if (msg.t === "adminError") (window as any).__adminError?.(msg.error);
       }
+        // NEW: Material List
+              if (msg.t === "materials") {
+                terrain.setMaterials((msg as any).list);
+              }
+              
+              // NEW: Terrain Updates
+              else if (msg.t === "terrainUpdate") {
+                const patches = (msg as any).patches;
+                for (const p of patches) {
+                  if (p.h !== undefined) {
+                     // Protocol x,y is the grid coordinate
+                     terrain.setHeight(p.x, p.y, p.h);
+                  }
+                  if (p.m !== undefined) {
+                     terrain.setTileMaterial(p.x, p.y, p.m);
+                  }
+                }
+              }
     };
   }
   connectWs();

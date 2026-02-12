@@ -15,6 +15,23 @@ export type ResourceState = {
   respawnAtMs: number;
 };
 
+export type TerrainMaterial = {
+  id: string;
+  name: string;
+  color: number;
+  textureName?: string;
+};
+
+// Represents a single tile update
+export type TerrainPatch = {
+  x: number;
+  y: number;
+  h?: number; // If present, update height
+  m?: string; // If present, update material ID
+};
+
+
+
 /**
  * DB-driven item ids (not a union).
  */
@@ -46,6 +63,7 @@ export type ChatLine = {
 };
 
 // -------------------- Admin DTOs (safe CRUD, no raw SQL) --------------------
+export type AdminMaterialRow = TerrainMaterial;
 
 export type AdminItemRow = {
   id: ItemId;
@@ -122,6 +140,8 @@ export type ClientToServer =
   | { t: "interact"; at: Vec2 }
   | { t: "chat"; text: string }
 
+
+
   // ---- Admin requests (server must enforce rights >= 3) ----
   | { t: "adminGetSnapshot" } // fetch items/resources/spawns/players for editor
   | { t: "adminPlaceSpawn"; defId: string; x: number; y: number }
@@ -130,6 +150,10 @@ export type ClientToServer =
   | { t: "adminUpsertResourceDef"; def: AdminResourceDefRow }
   | { t: "adminSetResourceLoot"; resourceId: string; loot: AdminResourceLootRow[] }
   | { t: "adminUpdatePlayer"; player: AdminPlayerRow };
+| { t: "adminUpsertMaterial"; mat: AdminMaterialRow }
+
+
+  | { t: "adminTerrainPaint"; patches: TerrainPatch[] } // Batch updates for performance
 
 // -------------------- Server → Client --------------------
 
@@ -160,3 +184,7 @@ export type ServerToClient =
     }
   | { t: "adminAck"; op: string }
   | { t: "adminError"; error: string };
+
+| { t: "terrainSnapshot"; chunkX: number; chunkY: number; data: string } // We'll assume full sync for now
+  | { t: "terrainUpdate"; patches: TerrainPatch[] } // Live broadcasting of edits
+  | { t: "materials"; list: TerrainMaterial[] }     // Send list on login/update
