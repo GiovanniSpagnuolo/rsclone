@@ -847,26 +847,38 @@ wss.on("connection", (ws, req) => {
   });
 });
 
+// packages/server/src/index.ts
+
 // Tick loop: step sim, broadcast snapshots, periodic persistence
 setInterval(() => {
   sim.step();
 
-  broadcast({
-    t: "snapshot",
-    tick: sim.tick,
-    players: sim.snapshotPlayers(),
-    resources: sim.snapshotResources()
-      
-  });
-
-  // Persist every ~5 seconds per connected user
   const now = Date.now();
+
+  // 1. Loop for Snapshots (Personalized View)
+  for (const c of conns.values()) {
+    const snap = sim.getSnapshotFor(c.userId);
+    
+    if (snap) {
+      send(c.ws, {
+        t: "snapshot",
+        tick: sim.tick,
+        players: snap.players,
+        resources: snap.resources
+      });
+    }
+  }
+  // ^ You were missing this closing brace
+
+  // 2. Loop for Persistence (Save Data)
   for (const c of conns.values()) {
     if (now - c.lastSavedMs < 5000) continue;
 
-    const p = sim.players.get(c.userId);
+    // FIX: Use sim.getPlayer() because sim.players (Map) no longer exists
+    const p = sim.getPlayer(c.userId);
     const skills = sim.getSkills(c.userId);
     const inv = sim.getInventory(c.userId);
+    
     if (!p || !skills || !inv) continue;
 
     saveCharacterState(c.charId, p.pos.x, p.pos.y, skills);

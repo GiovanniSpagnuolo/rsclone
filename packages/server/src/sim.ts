@@ -1,4 +1,3 @@
-// packages/server/src/sim.ts
 import { makeCollision, isWalkable, WORLD_H, WORLD_W } from "@rsclone/shared/world";
 import type {
   Inventory,
@@ -15,6 +14,7 @@ import { makeResources } from "./resources.js";
 import { db } from "./db.js";
 import { ItemRepo } from "./itemRepo.js";
 import { ResourceRepo } from "./resourceRepo.js";
+import { SpatialGrid } from "./SpatialGrid.js";
 
 const INV_SLOTS = 30;
 
@@ -59,11 +59,13 @@ export class Sim {
   // Grid is mutable so we can block/unblock tiles dynamically
   readonly grid: number[][] = makeCollision();
 
-  // We store extra data (defId) internally
-  readonly resources: SimResource[] = [];
+  // Spatial Grids for efficient querying
+  readonly playerGrid = new SpatialGrid<Player>();
+  readonly resourceGrid = new SpatialGrid<SimResource>();
+
+  // Keep a map for O(1) exact-tile lookups (interaction checks)
   private resourceByPos = new Map<string, SimResource>();
 
-  readonly players = new Map<string, Player>();
   tick = 0;
 
   private items = new ItemRepo();
@@ -76,44 +78,47 @@ export class Sim {
   /**
    * Reloads resources and rebuilds the collision grid.
    */
-    reloadResourcesFromDb() {
-        // 0. Clear definition caches so we don't use stale data
-        this.items.clearCache();
-        this.resourceRepo.clearCache();
+  reloadResourcesFromDb() {
+    this.items.clearCache();
+    this.resourceRepo.clearCache();
 
-        // 1. Fetch new map layout
-        const next = makeResources();
-        this.resources.length = 0;
-        this.resources.push(...next);
+    // 1. Fetch new map layout
+    const next = makeResources();
+    
+    // 2. Clear old data
+    this.resourceGrid.clear();
+    this.resourceByPos.clear();
 
-        // 2. Rebuild position index
-        this.resourceByPos.clear();
-        for (const r of this.resources) {
-          this.resourceByPos.set(`${r.pos.x},${r.pos.y}`, r);
-        }
+    // 3. Populate new data
+    for (const r of next) {
+      this.resourceGrid.add(r);
+      this.resourceByPos.set(`${r.pos.x},${r.pos.y}`, r);
+    }
 
-        // 3. Reset collision grid to world base
-        const base = makeCollision();
-        for (let y = 0; y < WORLD_H; y++) {
-          for (let x = 0; x < WORLD_W; x++) {
-            this.grid[y][x] = base[y][x];
-          }
-        }
+    // 4. Reset collision grid to world base
+    const base = makeCollision();
+    for (let y = 0; y < WORLD_H; y++) {
+      for (let x = 0; x < WORLD_W; x++) {
+        this.grid[y][x] = base[y][x];
+      }
+    }
 
-        // 4. Apply resource collision
-        for (const r of this.resources) {
-          const def = this.resourceRepo.getById(r.defId) ?? this.resourceRepo.getDefaultForType(r.type);
-          if (def && def.collision === "block") {
-            this.grid[r.pos.y][r.pos.x] = 1;
-          }
+    // 5. Apply resource collision
+    for (const r of next) {
+      const def = this.resourceRepo.getById(r.defId) ?? this.resourceRepo.getDefaultForType(r.type);
+      if (def && def.collision === "block") {
+        if (r.pos.x >= 0 && r.pos.x < WORLD_W && r.pos.y >= 0 && r.pos.y < WORLD_H) {
+           this.grid[r.pos.y][r.pos.x] = 1;
         }
       }
+    }
+  }
 
   addPlayer(id: string, name: string, spawn: Vec2, skills: SkillXP, inventory: Inventory) {
     const inv: Inventory =
       inventory?.length === INV_SLOTS ? inventory.slice() : Array.from({ length: INV_SLOTS }, () => null);
 
-    this.players.set(id, {
+    const p: Player = {
       id,
       name,
       pos: { ...spawn },
@@ -122,29 +127,38 @@ export class Sim {
       skills: { ...skills },
       inventory: inv,
       action: null
-    });
+    };
+    
+    this.playerGrid.add(p);
   }
 
   removePlayer(id: string) {
-    this.players.delete(id);
+    this.playerGrid.remove(id);
+  }
+
+  getPlayer(id: string) {
+    return this.playerGrid.get(id);
   }
 
   setMoveTarget(id: string, dest: Vec2) {
-    const p = this.players.get(id);
+    const p = this.getPlayer(id);
     if (!p) return;
     if (p.action) return;
 
     p.pending = null;
     p.path = findPathAStar(this.grid, p.pos, dest, 2000);
+    // Grid update happens in step() as they move
   }
 
   requestInteract(id: string, at: Vec2) {
-    const p = this.players.get(id);
+    const p = this.getPlayer(id);
     if (!p) return;
     if (p.action) return;
 
     const tx = Math.floor(at.x);
     const ty = Math.floor(at.y);
+    
+    // Use the O(1) map for specific tile interaction
     const res = this.resourceByPos.get(`${tx},${ty}`);
     if (!res) return;
 
@@ -164,16 +178,16 @@ export class Sim {
     this.tick++;
     const now = Date.now();
 
-    // Respawn logic
-    for (const r of this.resources) {
+    // Respawn logic (Iterate all resources)
+    for (const r of this.resourceGrid.getAll()) {
       if (!r.alive && r.respawnAtMs > 0 && now >= r.respawnAtMs) {
         r.alive = true;
         r.respawnAtMs = 0;
       }
     }
 
-    // Player logic
-    for (const p of this.players.values()) {
+    // Player logic (Iterate all players)
+    for (const p of this.playerGrid.getAll()) {
       if (p.action) {
         p.action.ticksLeft -= 1;
         if (p.action.ticksLeft <= 0) {
@@ -186,6 +200,10 @@ export class Sim {
       if (next && isWalkable(this.grid, next.x, next.y)) {
         p.pos = next;
         p.path.shift();
+        
+        // --- KEY CHANGE: Update Spatial Grid Position ---
+        this.playerGrid.update(p);
+        
       } else if (next) {
         p.path = []; // Path blocked
       }
@@ -202,49 +220,74 @@ export class Sim {
     }
   }
 
-  snapshotPlayers(): PlayerState[] {
-    return Array.from(this.players.values()).map((p) => ({
+  /**
+   * Generates a snapshot tailored for a specific viewer.
+   * Only includes entities in the chunks near the viewer.
+   */
+  getSnapshotFor(viewerId: string) {
+    const viewer = this.getPlayer(viewerId);
+    if (!viewer) return null;
+
+    // 1. Get nearby players
+    const nearbyPlayers = this.playerGrid.queryViewRect(viewer.pos);
+    const pStates: PlayerState[] = nearbyPlayers.map((p) => ({
       id: p.id,
       name: p.name,
       pos: { ...p.pos },
       action: p.action ? { ...p.action, target: { ...p.action.target } } : null
     }));
+
+    // 2. Get nearby resources
+    const nearbyRes = this.resourceGrid.queryViewRect(viewer.pos);
+    const rStates = nearbyRes.map((r) => {
+      const def = this.resourceRepo.getById(r.defId) ?? this.resourceRepo.getDefaultForType(r.type);
+      
+      return {
+        ...r,
+        pos: { ...r.pos },
+        // Ensure these strings are passed so createGame3d.ts can find them in the vfs
+        mesh: def?.mesh ?? "",
+        depletedMesh: def?.depletedMesh ?? ""
+      };
+    });
+
+    return { players: pStates, resources: rStates };
   }
-
-
-      
-      
-      snapshotResources(): (ResourceState & { mesh: string; depletedMesh: string })[] {
-          return this.resources.map((r) => {
-            const def = this.resourceRepo.getById(r.defId) ?? this.resourceRepo.getDefaultForType(r.type);
-            
-            return {
-              ...r,
-              pos: { ...r.pos },
-              // Ensure these strings are passed so createGame3d.ts can find them in the vfs
-              mesh: def?.mesh ?? "",
-              depletedMesh: def?.depletedMesh ?? ""
-            };
-          });
-        
-      
-      
-      
-      
+  
+  // Legacy global snapshots (can be removed if index.ts is updated)
+  snapshotPlayers(): PlayerState[] {
+      return this.playerGrid.getAll().map((p) => ({
+        id: p.id,
+        name: p.name,
+        pos: { ...p.pos },
+        action: p.action ? { ...p.action, target: { ...p.action.target } } : null
+      }));
+  }
+  
+  snapshotResources() {
+      return this.resourceGrid.getAll().map((r) => {
+        const def = this.resourceRepo.getById(r.defId) ?? this.resourceRepo.getDefaultForType(r.type);
+        return {
+          ...r,
+          pos: { ...r.pos },
+          mesh: def?.mesh ?? "",
+          depletedMesh: def?.depletedMesh ?? ""
+        };
+      });
   }
 
   getSkills(id: string): SkillXP | null {
-    const p = this.players.get(id);
+    const p = this.getPlayer(id);
     return p ? { ...p.skills } : null;
   }
 
   getInventory(id: string): Inventory | null {
-    const p = this.players.get(id);
+    const p = this.getPlayer(id);
     return p ? p.inventory.map((s) => (s ? { ...s } : null)) : null;
   }
 
   private addItem(playerId: string, itemId: ItemId, qty: number): boolean {
-    const p = this.players.get(playerId);
+    const p = this.getPlayer(playerId);
     if (!p) return false;
 
     qty = Math.max(0, Math.floor(qty));

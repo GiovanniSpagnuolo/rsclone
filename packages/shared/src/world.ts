@@ -1,5 +1,6 @@
-export const WORLD_W = 40;
-export const WORLD_H = 24;
+export const WORLD_W = 256;
+export const WORLD_H = 256;
+export const CHUNK_SIZE = 16;
 
 // 0 = walkable, 1 = blocked
 export function makeCollision(): number[][] {

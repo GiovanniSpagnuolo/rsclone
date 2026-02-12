@@ -3,6 +3,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils";
 import type { PlayerState, ResourceState } from "@rsclone/shared/protocol";
 import { WORLD_W, WORLD_H, makeCollision } from "@rsclone/shared/world";
+import { CameraRig } from "./CameraRig";
 
 // --- TYPES ---
 export type EntityMesh = {
@@ -154,6 +155,9 @@ export function createGame3d(
   token: string,
   onContextMenu: (x: number, y: number, options: ContextMenuOption[]) => void
 ) {
+    // --- PASTE HERE (Move these to the top) ---
+      let ws: WebSocket | null = null;
+      let myId: string | null = null;
   (window as any).__wsToken = token;
   let statusSetter: ((s: string) => void) | null = null;
   (window as any).__setStatus = (s: string) => statusSetter?.(s);
@@ -167,6 +171,10 @@ export function createGame3d(
   camera.lookAt(WORLD_W / 2, 0, WORLD_H / 2);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
+    // --- NEW: Camera Rig Setup ---
+      const rig = new CameraRig(camera, container);
+      // Set initial look target to center of world
+      rig.setTarget({ x: WORLD_W / 2, y: 0, z: WORLD_H / 2 });
   renderer.setSize(container.clientWidth, container.clientHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -325,6 +333,18 @@ export function createGame3d(
   function animate() {
     raf = requestAnimationFrame(animate);
     const dt = clock.getDelta();
+      
+      // --- NEW: Update Camera ---
+        // 1. Find "My" Player Mesh
+        if (myId && players.has(myId)) {
+          const p = players.get(myId)!;
+          // We target the "Head" area (y + 1.5) so we look at the character, not their feet
+          rig.setTarget({ x: p.root.position.x, y: 1.5, z: p.root.position.z });
+        }
+
+        // 2. Step the Rig physics
+        rig.update(dt);
+        // --------------------------
     
     for (let i = markers.length - 1; i >= 0; i--) {
         if (!markers[i].update(dt)) { scene.remove(markers[i].mesh); markers.splice(i, 1); }
@@ -457,8 +477,7 @@ export function createGame3d(
   renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
   renderer.domElement.addEventListener("pointerdown", onPointerDown);
 
-  let ws: WebSocket | null = null;
-  let myId: string | null = null;
+
   function wsSend(obj: any) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
 
   function connectWs() {
@@ -531,6 +550,7 @@ export function createGame3d(
     setStatusText(fn: (s: string) => void) { statusSetter = fn; },
     triggerAction: (action: () => void) => action(),
     destroy() {
+        rig.destroy();
       cancelAnimationFrame(raf);
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("resize", resize);
