@@ -16,6 +16,7 @@ uploads
 *.db
 *.env
 *.run
+original_models
 
 # Editor directories and files
 .vscode/*

@@ -68,8 +68,15 @@ export type AdminResourceDefRow = {
   ticksMin: number;
   ticksMax: number;
   respawnMs: number;
+
+  // --- NEW (client visuals + pathing) ---
+  mesh: string;           // alive mesh id / asset key
+  depletedMesh: string;   // depleted mesh id / asset key
+  collision: "none" | "block"; // NOTE: "block" blocks even when depleted
+
   metaJson: string;
 };
+
 
 export type AdminResourceLootRow = {
   resourceId: string;
@@ -102,6 +109,11 @@ export type AdminPlayerRow = {
   xpMining: number;
   xpFishing: number;
 };
+
+export type AdminTool =
+  | { mode: "off" }
+  | { mode: "remove" }
+  | { mode: "place"; defId: string };
 
 // -------------------- Client → Server --------------------
 

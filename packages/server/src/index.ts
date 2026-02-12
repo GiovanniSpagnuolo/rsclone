@@ -193,6 +193,9 @@ type ResDefRowDb = {
   ticks_min: number;
   ticks_max: number;
   respawn_ms: number;
+    mesh: string; 
+      depleted_mesh: string;
+      collision: string;
   meta_json: string;
 };
 
@@ -240,13 +243,12 @@ function buildAdminSnapshot(): {
     )
     .all() as ItemRowDb[];
 
-  const resDefsDb = db
-    .prepare(
-      `SELECT id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms, meta_json
-       FROM resource_defs
-       ORDER BY id ASC`
-    )
-    .all() as ResDefRowDb[];
+  const resDefsDb = db.prepare(
+     `SELECT id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms, 
+             mesh, depleted_mesh, collision, meta_json
+      FROM resource_defs
+      ORDER BY id ASC`
+   ).all() as ResDefRowDb[];
 
   const lootDb = db
     .prepare(
@@ -296,17 +298,20 @@ function buildAdminSnapshot(): {
     metaJson: r.meta_json ?? "{}"
   }));
 
-  const resourceDefs: AdminResourceDefRow[] = resDefsDb.map((r) => ({
-    id: r.id,
-    resourceType: r.resource_type as any,
-    name: r.name,
-    skill: r.skill as any,
-    xpGain: toInt(r.xp_gain, 0),
-    ticksMin: toInt(r.ticks_min, 1),
-    ticksMax: toInt(r.ticks_max, toInt(r.ticks_min, 1)),
-    respawnMs: toInt(r.respawn_ms, 0),
-    metaJson: r.meta_json ?? "{}"
-  }));
+    const resourceDefs: AdminResourceDefRow[] = resDefsDb.map((r) => ({
+        id: r.id,
+        resourceType: r.resource_type as any,
+        name: r.name,
+        skill: r.skill as any,
+        xpGain: toInt(r.xp_gain, 0),
+        ticksMin: toInt(r.ticks_min, 1),
+        ticksMax: toInt(r.ticks_max, 1),
+        respawnMs: toInt(r.respawn_ms, 0),
+        mesh: r.mesh ?? "",
+        depletedMesh: r.depleted_mesh ?? "",
+        collision: r.collision as any,
+        metaJson: r.meta_json ?? "{}"
+      }));
 
   const resourceLoot: AdminResourceLootRow[] = lootDb.map((r) => ({
     resourceId: r.resource_id,
@@ -353,11 +358,14 @@ const adminPlaceSpawnTx = db.transaction((userId: string, defId: string, x: numb
   db.prepare(`DELETE FROM resource_spawns WHERE x = ? AND y = ?`).run(x, y);
 
   const id = randomUUID();
-  const now = Date.now();
+  const now = Date.now(); // You can keep this variable if you want, but it's unused in the query below
+
+  // --- FIXED QUERY ---
   db.prepare(
-    `INSERT INTO resource_spawns (id, def_id, x, y, enabled, placed_by_user_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 1, ?, ?, ?)`
-  ).run(id, defId, x, y, userId, now, now);
+    `INSERT INTO resource_spawns (id, def_id, x, y, enabled)
+     VALUES (?, ?, ?, ?, 1)`
+  ).run(id, defId, x, y); // <--- REMOVED: userId, now, now
+  // -------------------
 
   const after = db
     .prepare(`SELECT id, def_id, x, y, enabled FROM resource_spawns WHERE x=? AND y=?`)
@@ -441,9 +449,9 @@ function upsertResourceDef(userId: string, def: AdminResourceDefRow) {
 
   db.prepare(
     `INSERT INTO resource_defs
-      (id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms, created_at, updated_at, meta_json)
+      (id, resource_type, name, skill, xp_gain, ticks_min, ticks_max, respawn_ms, mesh, depleted_mesh, collision, created_at, updated_at, meta_json)
      VALUES
-      (?,  ?,            ?,    ?,     ?,       ?,         ?,         ?,          ?,          ?,          ?)
+      (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET
       resource_type=excluded.resource_type,
       name=excluded.name,
@@ -452,20 +460,18 @@ function upsertResourceDef(userId: string, def: AdminResourceDefRow) {
       ticks_min=excluded.ticks_min,
       ticks_max=excluded.ticks_max,
       respawn_ms=excluded.respawn_ms,
+                         mesh=excluded.mesh, 
+                         depleted_mesh=excluded.depleted_mesh, 
+                         collision=excluded.collision,   
       updated_at=excluded.updated_at,
       meta_json=excluded.meta_json`
+             
+
   ).run(
-    def.id,
-    def.resourceType,
-    def.name,
-    def.skill,
-    Math.max(0, toInt(def.xpGain, 0)),
-    Math.max(1, toInt(def.ticksMin, 1)),
-    Math.max(Math.max(1, toInt(def.ticksMin, 1)), toInt(def.ticksMax, toInt(def.ticksMin, 1))),
-    Math.max(0, toInt(def.respawnMs, 0)),
-    createdAt,
-    now,
-    def.metaJson?.trim() || "{}"
+        def.id, def.resourceType, def.name, def.skill, def.xpGain,
+            def.ticksMin, def.ticksMax, def.respawnMs,
+            def.mesh || "", def.depletedMesh || "", def.collision || "none",
+            createdAt, now, def.metaJson?.trim() || "{}"
   );
 
   const after = db
@@ -685,7 +691,6 @@ wss.on("connection", (ws, req) => {
 
           const exists = db.prepare(`SELECT 1 FROM resource_defs WHERE id = ?`).get(defId);
           if (!exists) return sendTo(userId, { t: "adminError", error: `Unknown resource def: ${defId}` });
-
           adminPlaceSpawnTx(userId, defId, x, y);
 
           // ✅ live reload world resources
@@ -699,7 +704,7 @@ wss.on("connection", (ws, req) => {
         if (msg.t === "adminRemoveSpawn") {
           const x = toInt((msg as any).x, 0);
           const y = toInt((msg as any).y, 0);
-
+            console.log ("Removing item");
           adminRemoveSpawnTx(userId, x, y);
 
           // ✅ live reload world resources
@@ -712,6 +717,7 @@ wss.on("connection", (ws, req) => {
 
         if (msg.t === "adminUpsertItem") {
           upsertItem(userId, (msg as any).item as AdminItemRow);
+            sim.reloadResourcesFromDb();
           sendTo(userId, { t: "adminAck", op: "adminUpsertItem" });
           sendTo(userId, { t: "adminSnapshot", ...buildAdminSnapshot() });
           return;
@@ -719,6 +725,7 @@ wss.on("connection", (ws, req) => {
 
         if (msg.t === "adminUpsertResourceDef") {
           upsertResourceDef(userId, (msg as any).def as AdminResourceDefRow);
+            sim.reloadResourcesFromDb();
           sendTo(userId, { t: "adminAck", op: "adminUpsertResourceDef" });
           sendTo(userId, { t: "adminSnapshot", ...buildAdminSnapshot() });
           return;
@@ -732,6 +739,7 @@ wss.on("connection", (ws, req) => {
           if (!exists) return sendTo(userId, { t: "adminError", error: `Unknown resource def: ${resourceId}` });
 
           setResourceLootTx(userId, resourceId, ((msg as any).loot ?? []) as AdminResourceLootRow[]);
+            sim.reloadResourcesFromDb();
           sendTo(userId, { t: "adminAck", op: "adminSetResourceLoot" });
           sendTo(userId, { t: "adminSnapshot", ...buildAdminSnapshot() });
           return;
@@ -848,6 +856,7 @@ setInterval(() => {
     tick: sim.tick,
     players: sim.snapshotPlayers(),
     resources: sim.snapshotResources()
+      
   });
 
   // Persist every ~5 seconds per connected user

@@ -1,19 +1,10 @@
-//
-//  AdminPanel.tsx
-//  
-//
-//  Created by Giovanni Spagnuolo on 2/10/26.
-//
-
-
-// packages/client/src/ui/admin/AdminPanel.tsx
 import React from "react";
 import { pillStyle } from "../styles";
 import type { AdminTool } from "./AdminDock";
 
 export function AdminPanel(props: {
-  adminTab: "map" | "items" | "resources" | "loot" | "players";
-  setAdminTab: (t: "map" | "items" | "resources" | "loot" | "players") => void;
+  adminTab: "map" | "items" | "resources" | "loot" | "players" | "assets";
+  setAdminTab: (t: "map" | "items" | "resources" | "loot" | "players" | "assets") => void;
 
   adminTool: AdminTool;
   dirtyItems: number;
@@ -29,12 +20,13 @@ export function AdminPanel(props: {
     players: number;
   };
 
-  // You supply tab bodies (so you can move them later)
+  // Tab Bodies
   mapBody: React.ReactNode;
   itemsBody: React.ReactNode;
   resourcesBody: React.ReactNode;
   lootBody: React.ReactNode;
   playersBody: React.ReactNode;
+  assetsBody: React.ReactNode;
 }) {
   const {
     adminTab,
@@ -49,7 +41,8 @@ export function AdminPanel(props: {
     itemsBody,
     resourcesBody,
     lootBody,
-    playersBody
+    playersBody,
+    assetsBody
   } = props;
 
   return (
@@ -87,6 +80,10 @@ export function AdminPanel(props: {
         <button onClick={() => setAdminTab("players")} style={pillStyle(adminTab === "players")}>
           Players
           {dirtyPlayers > 0 && <span style={{ marginLeft: 8, opacity: 0.65 }}>●</span>}
+        </button>
+
+        <button onClick={() => setAdminTab("assets")} style={pillStyle(adminTab === "assets")}>
+          Assets
         </button>
 
         <div
@@ -144,6 +141,7 @@ export function AdminPanel(props: {
         {adminTab === "resources" && resourcesBody}
         {adminTab === "loot" && lootBody}
         {adminTab === "players" && playersBody}
+        {adminTab === "assets" && assetsBody}
       </div>
     </div>
   );

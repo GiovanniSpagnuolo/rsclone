@@ -1,11 +1,16 @@
 {
   "name": "rsclone",
   "private": true,
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "npm run dev -w @rsclone/server & npm run dev -w @rsclone/client",
     "dev:server": "npm run dev -w @rsclone/server",
     "dev:client": "npm run dev -w @rsclone/client",
     "build": "npm run build -ws"
+  },
+  "devDependencies": {
+    "@types/three": "^0.182.0"
   }
 }

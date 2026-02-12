@@ -1,27 +1,16 @@
-//
-//  resources.ts
-//
-//  Created by Giovanni Spagnuolo on 2/9/26.
-//
-
+// packages/server/src/resources.ts
 import type { ResourceState, ResourceType, Vec2 } from "@rsclone/shared/protocol";
 import { db } from "./db.js";
 
-function fallbackHardcoded(): ResourceState[] {
-  const out: ResourceState[] = [];
+// Helper to keep the map populated if DB is empty
+function fallbackHardcoded(): (ResourceState & { defId: string })[] {
+  const out: (ResourceState & { defId: string })[] = [];
 
-  // Trees (north area)
-  const trees: Vec2[] = [
-    { x: 6, y: 6 },
-    { x: 7, y: 6 },
-    { x: 8, y: 6 },
-    { x: 6, y: 7 },
-    { x: 8, y: 7 },
-    { x: 7, y: 8 }
-  ];
+  const trees: Vec2[] = [{ x: 6, y: 6 }, { x: 7, y: 6 }, { x: 8, y: 6 }, { x: 6, y: 7 }, { x: 8, y: 7 }, { x: 7, y: 8 }];
   for (const p of trees) {
     out.push({
       id: `tree:${p.x},${p.y}`,
+      defId: "tree_basic",
       type: "tree",
       pos: p,
       alive: true,
@@ -29,15 +18,11 @@ function fallbackHardcoded(): ResourceState[] {
     });
   }
 
-  // Rocks (east area)
-  const rocks: Vec2[] = [
-    { x: 28, y: 6 },
-    { x: 29, y: 6 },
-    { x: 28, y: 7 }
-  ];
+  const rocks: Vec2[] = [{ x: 28, y: 6 }, { x: 29, y: 6 }, { x: 28, y: 7 }];
   for (const p of rocks) {
     out.push({
       id: `rock:${p.x},${p.y}`,
+      defId: "rock_basic",
       type: "rock",
       pos: p,
       alive: true,
@@ -45,15 +30,11 @@ function fallbackHardcoded(): ResourceState[] {
     });
   }
 
-  // Fishing spots near river edge (just above water line)
-  const fish: Vec2[] = [
-    { x: 10, y: 11 },
-    { x: 14, y: 11 },
-    { x: 18, y: 11 }
-  ];
+  const fish: Vec2[] = [{ x: 10, y: 11 }, { x: 14, y: 11 }, { x: 18, y: 11 }];
   for (const p of fish) {
     out.push({
       id: `fishing_spot:${p.x},${p.y}`,
+      defId: "fishing_spot_basic",
       type: "fishing_spot",
       pos: p,
       alive: true,
@@ -68,6 +49,7 @@ type SpawnRow = {
   id: string;
   x: number;
   y: number;
+  def_id: string;
   resource_type: string;
 };
 
@@ -76,7 +58,7 @@ function asResourceType(s: string): ResourceType | null {
   return null;
 }
 
-export function makeResources(): ResourceState[] {
+export function makeResources(): (ResourceState & { defId: string })[] {
   try {
     const rows = db
       .prepare(
@@ -84,6 +66,7 @@ export function makeResources(): ResourceState[] {
            s.id as id,
            s.x as x,
            s.y as y,
+           s.def_id as def_id,
            d.resource_type as resource_type
          FROM resource_spawns s
          JOIN resource_defs d ON d.id = s.def_id
@@ -93,17 +76,17 @@ export function makeResources(): ResourceState[] {
       .all() as SpawnRow[];
 
     if (!rows.length) {
-      // If nothing has been placed yet, keep the old map so the world isn't empty.
       return fallbackHardcoded();
     }
 
-    const out: ResourceState[] = [];
+    const out: (ResourceState & { defId: string })[] = [];
     for (const r of rows) {
       const t = asResourceType(r.resource_type);
       if (!t) continue;
 
       out.push({
-        id: r.id, // stable spawn id from DB
+        id: r.id,
+        defId: r.def_id,
         type: t,
         pos: { x: Math.floor(r.x), y: Math.floor(r.y) },
         alive: true,
@@ -113,7 +96,6 @@ export function makeResources(): ResourceState[] {
 
     return out;
   } catch {
-    // If DB schema isn't ready for any reason, fail safe to old behavior.
     return fallbackHardcoded();
   }
 }
