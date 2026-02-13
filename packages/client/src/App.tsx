@@ -3,6 +3,7 @@ import { createGame } from "./game/createGame";
 import { createGame3d, assetManager, type ContextMenuOption } from "./game3d/createGame3d";
 import { AuthScreen } from "./ui/AuthScreen";
 import { AdminModal } from "./ui/admin/AdminModal";
+import { AdminDock } from "./ui/admin/AdminDock";
 import type {
   ChatLine,
   PlayerState,
@@ -41,6 +42,8 @@ function findClosestWalkable(collision: number[][], start: { x: number; y: numbe
 
 export default function App() {
   const hostRef = useRef<HTMLDivElement>(null);
+    const [materials, setMaterials] = useState<any[]>([]);
+    const [selectedDefId, setSelectedDefId] = useState("tree_basic");
   const [initialLoading, setInitialLoading] = useState(true);
   const [assetProgress, setAssetProgress] = useState<number | null>(null);
   const [status, setStatus] = useState("connecting…");
@@ -107,9 +110,12 @@ export default function App() {
     (window as any).__skillsSet = (s: Skills) => setSkills(s); (window as any).__invSet = (inv: Inventory) => setInventory(inv); (window as any).__invFull = () => { setInvFullFlash(true); window.setTimeout(() => setInvFullFlash(false), 1400); }; (window as any).__minimapUpdate = (state: MinimapState) => setMinimap(state);
     (window as any).__adminOpen = (rights: number) => { setAdminRights(Math.max(0, rights | 0)); setAdminOpen(true); refreshSnapshot(); };
     (window as any).__adminSnapshot = (snap: AdminSnapshot) => setAdminSnapshot(snap);
+      (window as any).__setMaterials = (list: any[]) => setMaterials(list);
     (window as any).__adminError = (err: string) => { (window as any).__chatPush?.({ id: crypto.randomUUID(), ts: Date.now(), from: { id: "system", name: "System" }, text: `Admin error: ${err}` }); };
     return () => { (window as any).__chatPush = null; (window as any).__skillsSet = null; (window as any).__invSet = null; (window as any).__invFull = null; (window as any).__minimapUpdate = null; (window as any).__adminOpen = null; (window as any).__adminSnapshot = null; (window as any).__adminError = null; };
   }, []);
+    
+    
 
   function refreshSnapshot() { const send = (window as any).__adminSend; send?.({ t: "adminGetSnapshot" }); }
   function cap<T>(arr: T[], limit: number) { return arr.length > limit ? arr.slice(arr.length - limit) : arr; }
@@ -158,8 +164,25 @@ export default function App() {
          <div style={{ display: "flex", gap: 8 }}><input value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && canSend && sendChat()} placeholder="Chat..." style={{ flex: 1, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "8px 10px", color: "white", outline: "none" }} /><button onClick={sendChat} disabled={!canSend} style={{ padding: "0 16px", borderRadius: 6, background: canSend ? "rgba(80,140,255,0.3)" : "rgba(255,255,255,0.05)", border: "none", color: "white", cursor: canSend ? "pointer" : "default" }}>Send</button></div>
       </div>
 
-      <AdminModal
-        open={adminOpen}
+                                                                                                                          {/* --- ADD THIS BLOCK --- */}
+                                                                                                                                {adminRights >= 2 && (
+                                                                                                                                  <AdminDock
+                                                                                                                                    adminRights={adminRights}
+                                                                                                                                    defs={adminSnapshot?.resourceDefs || []}
+                                                                                                                                    materials={materials}
+                                                                                                                                    selectedDefId={selectedDefId}
+                                                                                                                                    setSelectedDefId={setSelectedDefId}
+                                                                                                                                    adminTool={adminTool}
+                                                                                                                                    setAdminTool={setAdminTool}
+                                                                                                                                    onOpen={() => setAdminOpen(true)}
+                                                                                                                                    onRefresh={refreshSnapshot}
+                                                                                                                                    onClose={() => setAdminRights(0)}
+                                                                                                                                  />
+                                                                                                                                )}
+                                                                                                                                {/* ---------------------- */}
+
+                                                                                                                                <AdminModal
+                                                                                                                                  open={adminOpen}
         adminRights={adminRights}
         snapshot={adminSnapshot}
         onRefresh={refreshSnapshot}
@@ -167,6 +190,10 @@ export default function App() {
         token={token}
         adminTool={adminTool}
         setAdminTool={setAdminTool}
+        materials={materials}selectedDefId={selectedDefId}
+        selectedDefId={selectedDefId}
+        setSelectedDefId={setSelectedDefId}
+                                                                                                
       />
 
       {menu && <div style={{ position: "absolute", left: menu.x, top: menu.y, zIndex: 100, background: "rgba(20,20,25,0.95)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: 4, minWidth: 140 }} onMouseDown={e => e.stopPropagation()}>{menu.options.map((opt, i) => <div key={i} onClick={(e) => { e.stopPropagation(); opt.action(); setMenu(null); }} style={{ padding: "6px 10px", fontSize: 13, fontFamily: "sans-serif", color: opt.isCancel ? "#ff6b6b" : "white", cursor: "pointer" }} onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.1)"} onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>{opt.label}</div>)}</div>}

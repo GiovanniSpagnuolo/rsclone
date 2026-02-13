@@ -1,3 +1,4 @@
+// packages/shared/protocol.ts
 export const PROTOCOL_VERSION = 1;
 
 export type Vec2 = { x: number; y: number };
@@ -29,8 +30,6 @@ export type TerrainPatch = {
   h?: number; // If present, update height
   m?: string; // If present, update material ID
 };
-
-
 
 /**
  * DB-driven item ids (not a union).
@@ -131,7 +130,10 @@ export type AdminPlayerRow = {
 export type AdminTool =
   | { mode: "off" }
   | { mode: "remove" }
-  | { mode: "place"; defId: string };
+  | { mode: "place"; defId: string }
+// --- NEW: Terrain Tools ---
+  | { mode: "terrain_paint"; matId: string; brushSize: number }
+  | { mode: "terrain_height"; subMode: "raise" | "lower" | "flatten"; brushSize: number; strength: number; targetHeight?: number };
 
 // -------------------- Client → Server --------------------
 
@@ -140,8 +142,6 @@ export type ClientToServer =
   | { t: "interact"; at: Vec2 }
   | { t: "chat"; text: string }
 
-
-
   // ---- Admin requests (server must enforce rights >= 3) ----
   | { t: "adminGetSnapshot" } // fetch items/resources/spawns/players for editor
   | { t: "adminPlaceSpawn"; defId: string; x: number; y: number }
@@ -149,11 +149,10 @@ export type ClientToServer =
   | { t: "adminUpsertItem"; item: AdminItemRow }
   | { t: "adminUpsertResourceDef"; def: AdminResourceDefRow }
   | { t: "adminSetResourceLoot"; resourceId: string; loot: AdminResourceLootRow[] }
-  | { t: "adminUpdatePlayer"; player: AdminPlayerRow };
-| { t: "adminUpsertMaterial"; mat: AdminMaterialRow }
-
-
+  | { t: "adminUpdatePlayer"; player: AdminPlayerRow }
+  | { t: "adminUpsertMaterial"; mat: AdminMaterialRow }
   | { t: "adminTerrainPaint"; patches: TerrainPatch[] } // Batch updates for performance
+  | { t: "adminSaveTerrain" }; // <--- NEW: Triggers server to dump terrain to assets
 
 // -------------------- Server → Client --------------------
 
@@ -183,8 +182,8 @@ export type ServerToClient =
       players: AdminPlayerRow[];
     }
   | { t: "adminAck"; op: string }
-  | { t: "adminError"; error: string };
+  | { t: "adminError"; error: string }
 
-| { t: "terrainSnapshot"; chunkX: number; chunkY: number; data: string } // We'll assume full sync for now
+  | { t: "terrainSnapshot"; chunkX: number; chunkY: number; data: string }
   | { t: "terrainUpdate"; patches: TerrainPatch[] } // Live broadcasting of edits
-  | { t: "materials"; list: TerrainMaterial[] }     // Send list on login/update
+  | { t: "materials"; list: TerrainMaterial[] };     // Send list on login/update

@@ -1,3 +1,4 @@
+// packages/server/src/index.ts
 import { WebSocketServer } from "ws";
 import { randomUUID } from "node:crypto";
 
@@ -7,6 +8,7 @@ import { verifyToken } from "./auth.js";
 import { getDefaultCharacterForUser, rowToSkills, saveCharacterState } from "./characterRepo.js";
 import { Sim, type SimEvent } from "./sim.ts";
 import { TerrainRepo } from "./TerrainRepo.js";
+import { CHUNK_SIZE } from "@rsclone/shared/world";
 
 import type {
   ChatLine,
@@ -84,6 +86,7 @@ type Conn = {
   ws: import("ws").WebSocket;
   lastSavedMs: number;
   lastChatMs: number;
+  lastChunkKey: string;
 };
 
 const conns = new Map<string, Conn>();
@@ -196,9 +199,9 @@ type ResDefRowDb = {
   ticks_min: number;
   ticks_max: number;
   respawn_ms: number;
-    mesh: string; 
-      depleted_mesh: string;
-      collision: string;
+  mesh: string;
+  depleted_mesh: string;
+  collision: string;
   meta_json: string;
 };
 
@@ -361,14 +364,11 @@ const adminPlaceSpawnTx = db.transaction((userId: string, defId: string, x: numb
   db.prepare(`DELETE FROM resource_spawns WHERE x = ? AND y = ?`).run(x, y);
 
   const id = randomUUID();
-  const now = Date.now(); // You can keep this variable if you want, but it's unused in the query below
 
-  // --- FIXED QUERY ---
   db.prepare(
     `INSERT INTO resource_spawns (id, def_id, x, y, enabled)
      VALUES (?, ?, ?, ?, 1)`
-  ).run(id, defId, x, y); // <--- REMOVED: userId, now, now
-  // -------------------
+  ).run(id, defId, x, y);
 
   const after = db
     .prepare(`SELECT id, def_id, x, y, enabled FROM resource_spawns WHERE x=? AND y=?`)
@@ -463,18 +463,16 @@ function upsertResourceDef(userId: string, def: AdminResourceDefRow) {
       ticks_min=excluded.ticks_min,
       ticks_max=excluded.ticks_max,
       respawn_ms=excluded.respawn_ms,
-                         mesh=excluded.mesh, 
-                         depleted_mesh=excluded.depleted_mesh, 
-                         collision=excluded.collision,   
+      mesh=excluded.mesh, 
+      depleted_mesh=excluded.depleted_mesh, 
+      collision=excluded.collision,   
       updated_at=excluded.updated_at,
       meta_json=excluded.meta_json`
-             
-
   ).run(
-        def.id, def.resourceType, def.name, def.skill, def.xpGain,
-            def.ticksMin, def.ticksMax, def.respawnMs,
-            def.mesh || "", def.depletedMesh || "", def.collision || "none",
-            createdAt, now, def.metaJson?.trim() || "{}"
+      def.id, def.resourceType, def.name, def.skill, def.xpGain,
+      def.ticksMin, def.ticksMax, def.respawnMs,
+      def.mesh || "", def.depletedMesh || "", def.collision || "none",
+      createdAt, now, def.metaJson?.trim() || "{}"
   );
 
   const after = db
@@ -637,7 +635,8 @@ wss.on("connection", (ws, req) => {
     rights,
     ws,
     lastSavedMs: Date.now(),
-    lastChatMs: 0
+    lastChatMs: 0,
+    lastChunkKey: ""
   });
 
   sim.addPlayer(userId, username, spawn, skills, inventory);
@@ -645,12 +644,7 @@ wss.on("connection", (ws, req) => {
   send(ws, { t: "welcome", id: userId, tickRate: TICK_RATE });
   send(ws, { t: "you", skills, inventory });
   send(ws, { t: "chatHistory", lines: chatHistory });
-    send(ws, { t: "materials", list: terrainRepo.getMaterials() });
-    
-    const currentTerrain = terrainRepo.getAllPatches();
-      if (currentTerrain.length > 0) {
-          send(ws, { t: "terrainUpdate", patches: currentTerrain });
-      }
+  send(ws, { t: "materials", list: terrainRepo.getMaterials() });
 
   const joinLine: ChatLine = {
     id: randomUUID(),
@@ -691,6 +685,25 @@ wss.on("connection", (ws, req) => {
           sendTo(userId, { t: "adminSnapshot", ...snap });
           return;
         }
+        
+        // --- NEW: Handle Save Terrain ---
+        if (msg.t === "adminSaveTerrain") {
+             terrainRepo.saveToAssetCache();
+             sendTo(userId, { t: "chat", line: systemLine("Terrain saved to assets.") });
+             return;
+        }
+          if (msg.t === "adminTerrainPaint") {
+            terrainRepo.applyPatches(msg.patches);
+            broadcast({ t: "terrainUpdate", patches: msg.patches });
+            return;
+          }
+
+          if (msg.t === "adminUpsertMaterial") {
+            terrainRepo.upsertMaterial(msg.mat);
+            broadcast({ t: "materials", list: terrainRepo.getMaterials() });
+            return;
+          }
+        // --------------------------------
 
         if (msg.t === "adminPlaceSpawn") {
           const x = toInt((msg as any).x, 0);
@@ -713,7 +726,6 @@ wss.on("connection", (ws, req) => {
         if (msg.t === "adminRemoveSpawn") {
           const x = toInt((msg as any).x, 0);
           const y = toInt((msg as any).y, 0);
-            console.log ("Removing item");
           adminRemoveSpawnTx(userId, x, y);
 
           // ✅ live reload world resources
@@ -726,7 +738,7 @@ wss.on("connection", (ws, req) => {
 
         if (msg.t === "adminUpsertItem") {
           upsertItem(userId, (msg as any).item as AdminItemRow);
-            sim.reloadResourcesFromDb();
+          sim.reloadResourcesFromDb();
           sendTo(userId, { t: "adminAck", op: "adminUpsertItem" });
           sendTo(userId, { t: "adminSnapshot", ...buildAdminSnapshot() });
           return;
@@ -734,7 +746,7 @@ wss.on("connection", (ws, req) => {
 
         if (msg.t === "adminUpsertResourceDef") {
           upsertResourceDef(userId, (msg as any).def as AdminResourceDefRow);
-            sim.reloadResourcesFromDb();
+          sim.reloadResourcesFromDb();
           sendTo(userId, { t: "adminAck", op: "adminUpsertResourceDef" });
           sendTo(userId, { t: "adminSnapshot", ...buildAdminSnapshot() });
           return;
@@ -748,7 +760,7 @@ wss.on("connection", (ws, req) => {
           if (!exists) return sendTo(userId, { t: "adminError", error: `Unknown resource def: ${resourceId}` });
 
           setResourceLootTx(userId, resourceId, ((msg as any).loot ?? []) as AdminResourceLootRow[]);
-            sim.reloadResourcesFromDb();
+          sim.reloadResourcesFromDb();
           sendTo(userId, { t: "adminAck", op: "adminSetResourceLoot" });
           sendTo(userId, { t: "adminSnapshot", ...buildAdminSnapshot() });
           return;
@@ -758,12 +770,11 @@ wss.on("connection", (ws, req) => {
           const p = (msg as any).player as AdminPlayerRow;
           updatePlayerTx(userId, p);
 
-          // If target user is online, update rights + live sim state
           const target = conns.get(p.userId);
           if (target) {
             target.rights = toInt(p.rights, 0);
 
-            const pl = sim.players.get(p.userId);
+            const pl = sim.getPlayer(p.userId);
             if (pl) {
               pl.pos.x = toInt(p.x, 0);
               pl.pos.y = toInt(p.y, 0);
@@ -780,8 +791,6 @@ wss.on("connection", (ws, req) => {
               if (skillsNow && invNow) sendTo(p.userId, { t: "you", skills: skillsNow, inventory: invNow });
             }
           }
-            
-            
 
           sendTo(userId, { t: "adminAck", op: "adminUpdatePlayer" });
           sendTo(userId, { t: "adminSnapshot", ...buildAdminSnapshot() });
@@ -794,26 +803,9 @@ wss.on("connection", (ws, req) => {
         sendTo(userId, { t: "adminError", error: err?.message ?? "Admin op failed." });
         return;
       }
-        
-        
-        
-        
     }
-      
-      if (msg.t === "adminTerrainPaint") {
-         if (!requireAdmin(userId)) return;
-         terrainRepo.applyPatches(msg.patches);
-         // Broadcast to everyone so they see the change live!
-         broadcast({ t: "terrainUpdate", patches: msg.patches });
-         return;
-      }
 
-      if (msg.t === "adminUpsertMaterial") {
-         if (!requireAdmin(userId)) return;
-         terrainRepo.upsertMaterial(msg.mat);
-         broadcast({ t: "materials", list: terrainRepo.getMaterials() });
-         return;
-      }
+
 
     // ---------------- Chat ----------------
     if (msg.t === "chat") {
@@ -828,7 +820,6 @@ wss.on("connection", (ws, req) => {
       if (text.length === 0) return;
       if (text.length > 200) return;
 
-      // server-authoritative admin command
       if (text === "::admin") {
         if (c.rights >= 3) {
           sendTo(userId, { t: "adminOpen", rights: c.rights });
@@ -853,33 +844,29 @@ wss.on("connection", (ws, req) => {
     }
   });
 
-    ws.on("close", () => {
-        // FIX: Use sim.getPlayer() instead of sim.players.get()
-        const p = sim.getPlayer(userId);
-        
-        const skillsNow = sim.getSkills(userId);
-        const invNow = sim.getInventory(userId);
-        
-        if (p && skillsNow && invNow) {
-          saveCharacterState(chr.id, p.pos.x, p.pos.y, skillsNow);
-          saveInventory(chr.id, invNow);
-        }
+  ws.on("close", () => {
+    const p = sim.getPlayer(userId);
+    const skillsNow = sim.getSkills(userId);
+    const invNow = sim.getInventory(userId);
 
-        conns.delete(userId);
-        sim.removePlayer(userId);
+    if (p && skillsNow && invNow) {
+      saveCharacterState(chr.id, p.pos.x, p.pos.y, skillsNow);
+      saveInventory(chr.id, invNow);
+    }
 
-        const leaveLine: ChatLine = {
-          id: randomUUID(),
-          ts: Date.now(),
-          from: { id: "system", name: "System" },
-          text: `${username} disconnected.`
-        };
-        pushChat(leaveLine);
-        broadcast({ t: "chat", line: leaveLine });
-      });
-    });
+    conns.delete(userId);
+    sim.removePlayer(userId);
 
-// packages/server/src/index.ts
+    const leaveLine: ChatLine = {
+      id: randomUUID(),
+      ts: Date.now(),
+      from: { id: "system", name: "System" },
+      text: `${username} disconnected.`
+    };
+    pushChat(leaveLine);
+    broadcast({ t: "chat", line: leaveLine });
+  });
+});
 
 // Tick loop: step sim, broadcast snapshots, periodic persistence
 setInterval(() => {
@@ -887,26 +874,38 @@ setInterval(() => {
 
   const now = Date.now();
 
-  // 1. Loop for Snapshots (Personalized View)
   for (const c of conns.values()) {
+    // 1. Snapshot Entities
     const snap = sim.getSnapshotFor(c.userId);
-    
     if (snap) {
-      send(c.ws, {
-        t: "snapshot",
-        tick: sim.tick,
-        players: snap.players,
-        resources: snap.resources
-      });
+      send(c.ws, { t: "snapshot", tick: sim.tick, players: snap.players, resources: snap.resources });
+    }
+
+    // 2. Terrain Streaming
+    const p = sim.getPlayer(c.userId);
+    if (p) {
+        const cx = Math.floor(p.pos.x / CHUNK_SIZE);
+        const cy = Math.floor(p.pos.y / CHUNK_SIZE);
+        const key = `${cx},${cy}`;
+
+        if (key !== c.lastChunkKey) {
+            c.lastChunkKey = key;
+            const patches: any[] = [];
+            for (let y = cy - 1; y <= cy + 1; y++) {
+                for (let x = cx - 1; x <= cx + 1; x++) {
+                   patches.push(...terrainRepo.getPatchesInChunk(x, y));
+                }
+            }
+            if (patches.length > 0) {
+                send(c.ws, { t: "terrainUpdate", patches });
+            }
+        }
     }
   }
-  // ^ You were missing this closing brace
 
-  // 2. Loop for Persistence (Save Data)
   for (const c of conns.values()) {
     if (now - c.lastSavedMs < 5000) continue;
 
-    // FIX: Use sim.getPlayer() because sim.players (Map) no longer exists
     const p = sim.getPlayer(c.userId);
     const skills = sim.getSkills(c.userId);
     const inv = sim.getInventory(c.userId);

@@ -1,3 +1,4 @@
+// packages/client/src/game3d/createGame3d.ts
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils";
@@ -57,6 +58,11 @@ class HitMarker {
     (this.mesh.material as THREE.MeshBasicMaterial).opacity = 1 - progress;
     return true;
   }
+    dispose() {
+      const mesh = this.mesh as THREE.Mesh;
+      (mesh.material as THREE.Material).dispose();
+      mesh.geometry.dispose();
+    }
 }
 
 // --- ASSET MANAGER ---
@@ -71,7 +77,7 @@ export class AssetManager {
     if (this.isReady) { onProgress?.(100); return; }
     try {
       console.log("[AssetManager] Downloading cache...");
-      const res = await fetch("http://localhost:8081/game.cache");
+        const res = await fetch(`http://localhost:8081/game.cache?t=${Date.now()}`);
       if (!res.ok) throw new Error("No cache found");
 
       const contentLength = res.headers.get("content-length");
@@ -102,7 +108,11 @@ export class AssetManager {
       
       for (const [name, info] of Object.entries(dir)) {
         const fileData = new Uint8Array(buf.buffer, bodyOffset + info.offset, info.size);
-        const blob = new Blob([fileData], { type: "model/gltf-binary" });
+        // Detect mimetype roughly or just assume glb unless named otherwise
+        let mime = "model/gltf-binary";
+        if (name.endsWith(".dat")) mime = "application/octet-stream";
+        
+        const blob = new Blob([fileData], { type: mime });
         const url = URL.createObjectURL(blob);
         this.vfs.set(name, url);
       }
@@ -114,6 +124,17 @@ export class AssetManager {
   }
 
   has(filename: string) { return this.cache.has(filename) && this.cache.get(filename) !== "failed"; }
+
+  // --- NEW: Helper to get raw data ---
+  async getBlob(filename: string): Promise<ArrayBuffer | null> {
+      const url = this.vfs.get(filename);
+      if (!url) return null;
+      try {
+          const res = await fetch(url);
+          return await res.arrayBuffer();
+      } catch { return null; }
+  }
+  // -----------------------------------
 
   load(filename: string) {
     if (!filename || this.cache.has(filename)) return;
@@ -156,7 +177,6 @@ export function createGame3d(
   token: string,
   onContextMenu: (x: number, y: number, options: ContextMenuOption[]) => void
 ) {
-    // --- PASTE HERE (Move these to the top) ---
       let ws: WebSocket | null = null;
       let myId: string | null = null;
   (window as any).__wsToken = token;
@@ -172,9 +192,7 @@ export function createGame3d(
   camera.lookAt(WORLD_W / 2, 0, WORLD_H / 2);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
-    // --- NEW: Camera Rig Setup ---
       const rig = new CameraRig(camera, container);
-      // Set initial look target to center of world
       rig.setTarget({ x: WORLD_W / 2, y: 0, z: WORLD_H / 2 });
   renderer.setSize(container.clientWidth, container.clientHeight);
   renderer.shadowMap.enabled = true;
@@ -191,31 +209,65 @@ export function createGame3d(
   dir.shadow.mapSize.set(2048, 2048);
   scene.add(dir);
 
-  // 1. Ground
-    // --- NEW: Terrain ---
+  // 1. Terrain
+    // 1. Terrain
       const terrain = new TerrainMesh();
-      scene.add(terrain.mesh);
+      scene.add(terrain.group);
+      
+    // --- FIX START: Initialize Assets & Load Terrain ---
+      assetManager.init().then(() => {
+        console.log("[createGame3d] AssetManager initialized.");
+        
+        // Now that init is done, we can fetch the blob
+        assetManager.getBlob("terrain.dat").then((buf) => {
+            if (buf) {
+                console.log(`[createGame3d] Found terrain.dat (${buf.byteLength} bytes), hydrating...`);
+                try {
+                    terrain.hydrate(WORLD_W, WORLD_H, buf);
+                } catch (e) {
+                    console.error("[createGame3d] Failed to hydrate terrain:", e);
+                }
+            } else {
+                console.warn("[createGame3d] terrain.dat not found in VFS (check server cache generation).");
+            }
+        });
+      });
+      // --- FIX END ---
 
-  // 2. Water
-  const collision = makeCollision();
-  const waterGeo = new THREE.BoxGeometry(1, 0.2, 1);
-  const waterMat = new THREE.MeshStandardMaterial({ color: 0x29b6f6, roughness: 0.2 });
-  const waterMesh = new THREE.InstancedMesh(waterGeo, waterMat, WORLD_W * WORLD_H);
-  const dummy = new THREE.Object3D();
-  let idx = 0;
-  for (let y = 0; y < WORLD_H; y++) {
-    for (let x = 0; x < WORLD_W; x++) {
-      if (collision[y][x] === 1) {
-        dummy.position.set(x + 0.5, 0, y + 0.5);
-        dummy.updateMatrix();
-        waterMesh.setMatrixAt(idx++, dummy.matrix);
+    // 2. Water
+      const collision = makeCollision();
+      
+      // STEP 1: Count how many water tiles we actually need
+      let waterCount = 0;
+      for (let y = 0; y < WORLD_H; y++) {
+        for (let x = 0; x < WORLD_W; x++) {
+          if (collision[y][x] === 1) waterCount++;
+        }
       }
-    }
-  }
-  waterMesh.count = idx;
-  waterMesh.receiveShadow = true;
-  scene.add(waterMesh);
 
+      // STEP 2: Create the mesh with the EXACT needed size
+      // (Adding a small buffer just in case, or use waterCount directly)
+      const waterGeo = new THREE.BoxGeometry(1, 0.2, 1);
+      const waterMat = new THREE.MeshStandardMaterial({ color: 0x29b6f6, roughness: 0.2 });
+      
+      // --- FIX: Use calculated count instead of WORLD_W * WORLD_H ---
+      const waterMesh = new THREE.InstancedMesh(waterGeo, waterMat, waterCount);
+      
+      const dummy = new THREE.Object3D();
+      let idx = 0;
+      for (let y = 0; y < WORLD_H; y++) {
+        for (let x = 0; x < WORLD_W; x++) {
+          if (collision[y][x] === 1) {
+            dummy.position.set(x + 0.5, 0, y + 0.5);
+            dummy.updateMatrix();
+            waterMesh.setMatrixAt(idx++, dummy.matrix);
+          }
+        }
+      }
+      
+      waterMesh.instanceMatrix.needsUpdate = true; // IMPORTANT: Tell Three.js to upload the data
+      waterMesh.receiveShadow = true;
+      scene.add(waterMesh);
   // 3. Grid
   const grid = new THREE.GridHelper(Math.max(WORLD_W, WORLD_H), Math.max(WORLD_W, WORLD_H), 0x000000, 0x000000);
   grid.position.set(WORLD_W / 2, 0.01, WORLD_H / 2);
@@ -329,39 +381,130 @@ export function createGame3d(
 
   const clock = new THREE.Clock();
   let raf = 0;
-  function animate() {
-    raf = requestAnimationFrame(animate);
-    const dt = clock.getDelta();
-      
-      // --- NEW: Update Camera ---
-        // 1. Find "My" Player Mesh
-        if (myId && players.has(myId)) {
-          const p = players.get(myId)!;
-          // We target the "Head" area (y + 1.5) so we look at the character, not their feet
-          rig.setTarget({ x: p.root.position.x, y: 1.5, z: p.root.position.z });
-        }
-
-        // 2. Step the Rig physics
-        rig.update(dt);
-        // --------------------------
     
-    for (let i = markers.length - 1; i >= 0; i--) {
-        if (!markers[i].update(dt)) { scene.remove(markers[i].mesh); markers.splice(i, 1); }
-    }
+    
+        let isBrushActive = false;
+        let pendingPatches: any[] = [];
+        let isPointerDown = false;
+        let currentPointer: THREE.Intersection | null = null;
 
-    for (const ent of [...players.values(), ...resources.values()]) {
-        const dist = ent.root.position.distanceTo(ent.targetPos);
-        if (dist > 0.001) {
-            const step = 10.0 * dt;
-            if (dist <= step) ent.root.position.copy(ent.targetPos);
-            else ent.root.position.lerp(ent.targetPos, step / dist);
-            ent.root.lookAt(ent.targetPos.x, ent.root.position.y, ent.targetPos.z);
+      function applyBrush(intersect: THREE.Intersection) {
+          const tool = (window as any).__adminTool || { mode: "off" };
+          if (tool.mode === "off") return;
+
+          const pt = intersect.point;
+          const cx = Math.round(pt.x);
+          const cy = Math.round(pt.z);
+          const radius = tool.brushSize || 1;
+
+          for (let y = cy - radius + 1; y < cy + radius; y++) {
+              for (let x = cx - radius + 1; x < cx + radius; x++) {
+                  const dx = x - pt.x;
+                  const dy = y - pt.z;
+                  if (dx*dx + dy*dy > radius*radius) continue;
+
+                  if (tool.mode === "terrain_paint") {
+                      terrain.setTileMaterial(x, y, tool.matId);
+                      pendingPatches.push({ x, y, m: tool.matId });
+                  }
+                  else if (tool.mode === "terrain_height") {
+                      const currentH = terrain.getHeight(x, y);
+                      let newH = currentH;
+                      const strength = tool.strength || 0.5;
+
+                      if (tool.subMode === "raise") {
+                          newH = currentH + strength;
+                      } else if (tool.subMode === "lower") {
+                          newH = currentH - strength;
+                      } else if (tool.subMode === "flatten") {
+                          newH = tool.targetHeight ?? Math.round(currentH);
+                      }
+                      
+                      if (Math.abs(newH - currentH) > 0.01) {
+                          terrain.setHeight(x, y, newH);
+                          pendingPatches.push({ x, y, h: newH });
+                      }
+                  }
+              }
+          }
+      }
+      // Throttled Network Sender
+      setInterval(() => {
+          if (pendingPatches.length === 0) return;
+          const unique = new Map<string, any>();
+          for (const p of pendingPatches) unique.set(`${p.x},${p.y}_${p.h!==undefined?'h':'m'}`, p);
+          const batch = Array.from(unique.values());
+          pendingPatches = [];
+          wsSend({ t: "adminTerrainPaint", patches: batch });
+      }, 100);
+    
+    
+    function animate() {
+        raf = requestAnimationFrame(animate);
+        const dt = clock.getDelta();
+          
+        if (isPointerDown && currentPointer && (window as any).__adminTool?.mode?.startsWith("terrain_")) {
+            applyBrush(currentPointer);
         }
-        ent.mixer?.update(dt);
-    }
 
-    renderer.render(scene, camera);
-  }
+        if (myId && players.has(myId)) {
+            const p = players.get(myId)!;
+            // In createGame3d.ts, outside animate loop
+                let hasSnappedCamera = false;
+
+                // Inside animate loop
+                if (myId && players.has(myId)) {
+                    const p = players.get(myId)!;
+                    
+                    if (!hasSnappedCamera) {
+                        rig.jumpTo({ x: p.root.position.x, y: p.root.position.y + 1.5, z: p.root.position.z });
+                        hasSnappedCamera = true;
+                    } else {
+                        rig.setTarget({ x: p.root.position.x, y: p.root.position.y + 1.5, z: p.root.position.z });
+                    }
+                    
+                    terrain.updateView(p.root.position.x, p.root.position.z);
+                }
+            rig.setTarget({ x: p.root.position.x, y: p.root.position.y + 1.5, z: p.root.position.z });
+            terrain.updateView(p.root.position.x, p.root.position.z);
+        } else {
+            // Debugging: If this prints forever, your WS connection or Login is failing
+             console.log("Waiting for player...", myId, players.size);
+        }
+        rig.update(dt);
+        
+        // Update hit markers + remove expired ones
+        for (let i = markers.length - 1; i >= 0; i--) {
+          const alive = markers[i].update(dt);
+
+          if (!alive) {
+            const m = markers[i];
+
+            scene.remove(m.mesh);
+            m.dispose();            // <-- this is what I meant
+            markers.splice(i, 1);
+          }
+        }
+
+
+        // 2. Entity Gravity (Snap to Terrain)
+        for (const ent of [...players.values(), ...resources.values()]) {
+            const dist = ent.root.position.distanceTo(ent.targetPos);
+            if (dist > 0.001) {
+                const step = 10.0 * dt;
+                if (dist <= step) ent.root.position.copy(ent.targetPos);
+                else ent.root.position.lerp(ent.targetPos, step / dist);
+                ent.root.lookAt(ent.targetPos.x, ent.root.position.y, ent.targetPos.z);
+            }
+            
+            const groundH = terrain.getHeight(ent.root.position.x, ent.root.position.z);
+            ent.root.position.y = groundH;
+
+            ent.mixer?.update(dt);
+        }
+
+        renderer.render(scene, camera);
+      }
   animate();
 
   const raycaster = new THREE.Raycaster();
@@ -402,7 +545,7 @@ export function createGame3d(
               spawnMarker(hitEntity.position.x, hitEntity.position.z, 0xff0000);
           }
       } else {
-          const groundHits = raycaster.intersectObject(terrain.mesh);
+          const groundHits = raycaster.intersectObjects(terrain.group.children);
           if (groundHits.length > 0) {
               const pt = groundHits[0].point;
               const tx = Math.floor(pt.x);
@@ -430,34 +573,62 @@ export function createGame3d(
           }
       }
   }
+    
+    function onPointerMove(ev: PointerEvent) {
+          if (!isBrushActive) return;
+          const rect = renderer.domElement.getBoundingClientRect();
+          mouseNdc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+          mouseNdc.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+          raycaster.setFromCamera(mouseNdc, camera);
+          
+          const hits = raycaster.intersectObjects(terrain.group.children);
+          if (hits.length > 0) currentPointer = hits[0];
+          else currentPointer = null;
+      }
+      
+      function onPointerUp() {
+          isBrushActive = false;
+          isPointerDown = false;
+          currentPointer = null;
+      }
+      
+      renderer.domElement.addEventListener("pointermove", onPointerMove);
+      renderer.domElement.addEventListener("pointerup", onPointerUp);
 
-    function onPointerDown(ev: PointerEvent) {
+      function onPointerDown(ev: PointerEvent) {
           if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          isPointerDown = true;
+
           const rect = renderer.domElement.getBoundingClientRect();
           mouseNdc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
           mouseNdc.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
           raycaster.setFromCamera(mouseNdc, camera);
 
-          // --- ADMIN OVERRIDE CHECK ---
           const tool = (window as any).__adminTool || { mode: "off" };
           
-          // DEBUG LOG: See what the engine thinks the tool is
-          if (tool.mode !== "off") {
-              console.log("Admin Tool Active:", tool);
+          if (tool.mode.startsWith("terrain_")) {
+              isBrushActive = true;
+              
+              const hits = raycaster.intersectObjects(terrain.group.children);
+              if (hits.length > 0) {
+                  currentPointer = hits[0];
+                  if (tool.mode === "terrain_height" && tool.subMode === "flatten") {
+                      const pt = hits[0].point;
+                      const targetH = Math.round(pt.y);
+                      const newTool = { ...tool, targetHeight: targetH };
+                      (window as any).__adminTool = newTool;
+                  }
+                  applyBrush(hits[0]);
+              }
+              return;
           }
 
           if (tool.mode === "place" || tool.mode === "remove") {
-              const groundHits = raycaster.intersectObject(terrain.mesh);
-              
-              // DEBUG LOG: See if we are hitting the ground
-              console.log("Ground hits:", groundHits.length);
-
+              const groundHits = raycaster.intersectObjects(terrain.group.children);
               if (groundHits.length > 0) {
                   const pt = groundHits[0].point;
                   const tx = Math.floor(pt.x);
                   const ty = Math.floor(pt.z);
-                  
-                  console.log("Attempting action at:", tx, ty); // DEBUG
                   
                   if (tx >= 0 && ty >= 0 && tx < WORLD_W && ty < WORLD_H) {
                       if (tool.mode === "place") {
@@ -535,24 +706,17 @@ export function createGame3d(
           else if (msg.t === "adminSnapshot") (window as any).__adminSnapshot?.(msg);
           else if (msg.t === "adminError") (window as any).__adminError?.(msg.error);
       }
-        // NEW: Material List
-              if (msg.t === "materials") {
-                terrain.setMaterials((msg as any).list);
-              }
-              
-              // NEW: Terrain Updates
-              else if (msg.t === "terrainUpdate") {
-                const patches = (msg as any).patches;
-                for (const p of patches) {
-                  if (p.h !== undefined) {
-                     // Protocol x,y is the grid coordinate
-                     terrain.setHeight(p.x, p.y, p.h);
-                  }
-                  if (p.m !== undefined) {
-                     terrain.setTileMaterial(p.x, p.y, p.m);
-                  }
-                }
-              }
+      if (msg.t === "materials") {
+            terrain.setMaterials((msg as any).list);
+            (window as any).__setMaterials?.((msg as any).list);
+      }
+      else if (msg.t === "terrainUpdate") {
+        const patches = (msg as any).patches;
+        for (const p of patches) {
+            if (p.h !== undefined) terrain.setHeight(p.x, p.y, p.h);
+            if (p.m !== undefined) terrain.setTileMaterial(p.x, p.y, p.m);
+        }
+      }
     };
   }
   connectWs();
@@ -569,11 +733,16 @@ export function createGame3d(
     destroy() {
         rig.destroy();
       cancelAnimationFrame(raf);
-      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("resize", resize);
+        renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+              renderer.domElement.removeEventListener("pointermove", onPointerMove);
+              renderer.domElement.removeEventListener("pointerup", onPointerUp);
+              renderer.domElement.removeEventListener("contextmenu", onContextMenuPrevent);
+              window.removeEventListener("resize", resize);
+        
       ws?.close();
       renderer.dispose();
       if (renderer.domElement.parentElement === container) container.removeChild(renderer.domElement);
     }
   };
 }
+function onContextMenuPrevent(e: Event) { e.preventDefault(); }

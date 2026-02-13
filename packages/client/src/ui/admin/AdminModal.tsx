@@ -1,3 +1,4 @@
+// packages/client/src/ui/admin/AdminModal.tsx
 import React, { useEffect, useState } from "react";
 import { AdminShell } from "./AdminShell";
 import { inputStyle as baseInputStyle, smallBtnStyle } from "../styles";
@@ -33,6 +34,8 @@ export function AdminModal(props: {
   token: string;
   adminTool: AdminTool;
   setAdminTool: (t: any) => void;
+    selectedDefId: string;
+      setSelectedDefId: (id: string) => void;
 }) {
   const { open, snapshot, token, onRefresh } = props;
   const [tab, setTab] = useState<"map" | "items" | "resources" | "loot" | "players" | "assets">("map");
@@ -51,7 +54,7 @@ export function AdminModal(props: {
   const [dirtyLoot, setDirtyLoot] = useState(() => new Set<string>());
   const [dirtyPlayers, setDirtyPlayers] = useState(() => new Set<string>());
 
-  const [selectedDefId, setSelectedDefId] = useState<string>("tree_basic");
+    const { selectedDefId, setSelectedDefId } = props;
   const [assetsList, setAssetsList] = useState<AdminAssetRow[]>([]);
   const [isUploading, setIsUploading] = useState(false);
 
@@ -67,7 +70,7 @@ export function AdminModal(props: {
     }
     setLootDraftByRes(lootMap);
     setDirtyItems(new Set()); setDirtyDefs(new Set()); setDirtyLoot(new Set()); setDirtyPlayers(new Set());
-    if (snapshot.resourceDefs?.[0]?.id) setSelectedDefId(snapshot.resourceDefs[0].id);
+    //if (snapshot.resourceDefs?.[0]?.id) setSelectedDefId(snapshot.resourceDefs[0].id);
   }, [snapshot]);
 
   useEffect(() => { if (open && (tab === "assets" || tab === "resources")) fetchAssets(); }, [open, tab]);
@@ -239,6 +242,11 @@ export function AdminModal(props: {
              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                 {isUploading && <span>Uploading...</span>}
                 <label style={{ ...smallBtnStyle("blue"), position: "relative" }}>+ Upload<input type="file" style={{position:"absolute",inset:0,opacity:0}} onChange={e => e.target.files?.[0] && uploadAsset(e.target.files[0])} /></label>
+                
+                {/* --- NEW BUTTON --- */}
+                <button onClick={() => adminSend({ t: "adminSaveTerrain" })} style={smallBtnStyle("blue")}>Save Terrain to Cache</button>
+                {/* ------------------ */}
+                
                 <button onClick={() => window.open(`${API}/game.cache`, "_blank")} style={smallBtnStyle("neutral")}>Download Cache</button>
              </div>
              <div style={{ flex: 1, overflow: "auto", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}>
