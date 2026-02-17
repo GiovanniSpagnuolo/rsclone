@@ -1,16 +1,16 @@
 {
-  "name": "rsclone",
+  "name": "osrs-clone",
   "private": true,
   "workspaces": [
+    "apps/*",
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev -w @rsclone/server & npm run dev -w @rsclone/client",
-    "dev:server": "npm run dev -w @rsclone/server",
-    "dev:client": "npm run dev -w @rsclone/client",
-    "build": "npm run build -ws"
+    "dev:server": "npm run dev --workspace=server",
+    "dev:client": "npm run dev --workspace=client",
+    "dev": "concurrently -c \"blue,green\" -n \"SERVER,CLIENT\" --kill-others \"npm run dev:server\" \"npm run dev:client\""
   },
   "devDependencies": {
-    "@types/three": "^0.182.0"
+    "concurrently": "^8.2.2"
   }
 }

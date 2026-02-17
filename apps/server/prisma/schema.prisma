@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// --- ACCOUNT ---
+
+model User {
+  id           String      @id @default(uuid())
+  username     String      @unique
+  email        String      @unique
+  passwordHash String
+  rights       Int         @default(0) // 0=Player, 1=Mod, 2=Admin
+  avatarUrl    String?
+  createdAt    DateTime    @default(now())
+  refreshToken String?
+  characters   Character[]
+}
+
+model Character {
+  id            String   @id @default(uuid())
+  user          User     @relation(fields: [userId], references: [id])
+  userId        String
+  displayName   String   @unique
+  
+  // JSON fields stored as Strings for SQLite
+  position      String   @default("{\"x\":400,\"y\":400,\"plane\":0}")
+  skills        String   @default("{}")
+  attributes    String   @default("{}")
+  inventory     String   @default("[]")
+  equipment     String   @default("{}")
+  quests        String   @default("{}")
+  friends       String   @default("[]")
+  ignores       String   @default("[]")
+  
+  // Stats
+  minutesPlayed Int      @default(0)
+  lastLogin     DateTime @default(now())
+  lastIp        String?
+}
+
+// --- DEFINITIONS (The Blueprints) ---
+
+model ObjectDefinition {
+  id               Int      @id
+  name             String
+  modelId          Int
+  depletedModelId  Int?
+  isWalkable       Boolean  @default(false)
+  interactableData String   @default("{}") // JSON string
+  lootTable        String   @default("[]") // JSON string
+  spawns           MapSpawn[]
+}
+
+model ItemDefinition {
+  id             Int      @id
+  name           String
+  type           String   // weapon, food, potion, material
+  equipSlot      String?
+  maxStack       Int      @default(1)
+  consumableData String   @default("{}") // JSON string
+}
+
+// --- THE WORLD ---
+
+model MapChunk {
+  id          String     @id // e.g., "50_50"
+  terrainData String     // JSON string of the 8x8 tile grid
+  spawns      MapSpawn[]
+}
+
+model MapSpawn {
+  id              Int              @id @default(autoincrement())
+  
+  // Relationships
+  chunk           MapChunk         @relation(fields: [chunkId], references: [id])
+  chunkId         String
+  objectDef       ObjectDefinition @relation(fields: [objectDefId], references: [id])
+  objectDefId     Int
+  
+  // Placement
+  x               Int
+  y               Int
+  plane           Int              @default(0)
+  rotation        Int              @default(0)
+  @@unique([x, y, plane])
+}
+
+model CacheMeta {
+  id          Int      @id @default(1)
+  version     Int      @default(1)
+}
+
+model TerrainMaterial {
+  id         Int      @id
+  name       String
+  color      String   @default("#2d5a27")
+  isWalkable Boolean  @default(true)
+}

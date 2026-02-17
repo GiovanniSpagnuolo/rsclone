@@ -1,0 +1,73 @@
+🎮 OSRS-Clone Web Engine: Project Architecture & File Map
+🏗️ System Architecture Overview
+Core Stack: React, Three.js (@react-three/fiber, @react-three/drei), Node.js, Express, Socket.io, Prisma (SQLite).
+
+Game Loop: Server-authoritative 600ms tick engine. The client interpolates movement between ticks using Barycentric math to hug 3D terrain geometry.
+
+Thick Client Model: The client downloads a monolithic JSON payload (terrain, spawns, object definitions) and binary .glb files into the browser's IndexedDB on login. The game does not query the database for environment data during active gameplay.
+
+Developer Directives: Code must be kept strictly modular to avoid massive file uploads. Do not overly comment code or use "fix here" placeholders unless explicitly requested.
+
+📂 Backend (apps/server)
+Core Setup & Game Loop
+apps/server/index.js: The main entry point. Initializes Express, mounts REST routes, sets up Socket.io, loads the RAM cache, and starts the 600ms tick engine.
+
+apps/server/src/game/engine.js: Manages the 600ms server tick loop, processes player movement queues, and broadcasts state to active Socket.io clients.
+
+apps/server/src/game/mapManager.js: Handles loading SQLite MapChunk data into server RAM for fast collision/routing checks.
+
+apps/server/src/game/cacheManager.js: Parses ObjectDefinition JSON fields (interactableData, lootTable) into server RAM and handles global cache version bumping.
+
+API Routes
+apps/server/src/routes/auth.js: Handles player authentication and login payload.
+
+apps/server/src/routes/map.js: Handles fetching, generating, and saving terrain chunks.
+
+apps/server/src/routes/spawns.js: Handles CRUD operations for MapSpawn entities (placing objects with X, Y, Plane, and Rotation).
+
+apps/server/src/routes/cache.js: Serves the /full monolithic cache payload to the client and handles the /admin/objects upsert route for the Cache Editor.
+
+Scripts & Database
+prisma/schema.prisma: Defines the SQLite schema (MapChunk, MapSpawn with unique x/y/plane constraints, ObjectDefinition, and CacheMeta).
+
+apps/server/src/scripts/seedChunks.js: CLI script to generate empty 8x8 terrain chunks and automatically bump the global CacheMeta version.
+
+💻 Frontend (apps/client)
+Entry & Network
+apps/client/src/App.tsx: Main React entry point. Renders the <GameLoader /> first.
+
+apps/client/src/network/socket.ts: Manages the Socket.io connection singleton.
+
+apps/client/src/network/useGameEngine.ts: Custom hook that subscribes to the socket and provides position, serverMsg, and admin rights to the UI.
+
+Cache & Math Utilities
+apps/client/src/utils/assetCache.ts: Manages the local IndexedDB. Handles saving/retrieving the monolithic world_state JSON and binary .glb model blobs.
+
+apps/client/src/utils/terrainMath.ts: Contains the getExactHeight function, which uses Barycentric interpolation to calculate precise Y-axis values on sloped terrain triangles.
+
+Core Game Components
+apps/client/src/components/GameLoader.tsx: The Thick Client pre-loader. Compares cache versions, downloads the monolithic payload and missing .glb files, saves them to IndexedDB, and then mounts <GameWorld />.
+
+apps/client/src/components/world/GameWorld.tsx: The master game component. Holds React state for chunks, spawns, and objects. Passes this state down to the renderer and editor tools.
+
+apps/client/src/components/world/GridMap.tsx: The Three.js environment loop. Renders the terrain grid and iterates over the spawns array to place <GameObject />s.
+
+apps/client/src/components/world/CameraManager.tsx: A rigidly attached OrbitControls setup that copies the player's visual frame-by-frame delta to prevent jittering.
+
+apps/client/public/models/: The public directory holding raw .glb assets (e.g., 1.glb) served to the client downloader.
+
+World Entities
+apps/client/src/components/entities/LocalPlayer.tsx: The player mesh. Interpolates X/Z movement smoothly over network ticks, calculates its own Y-height against the terrain, and exports a visualPlayerPos vector for the camera to track.
+
+apps/client/src/components/entities/GameObject.tsx: A modular wrapper for @react-three/drei's useGLTF and Clone. Takes a modelId, requests the Blob URL from assetCache.ts, and renders instanced 3D objects with a brown box Suspense fallback.
+
+apps/client/src/components/world/DumbChunk.tsx: A highly optimized, merged BufferGeometry mesh used in Play Mode to drastically reduce draw calls. Handles raycast click-to-walk routing.
+
+apps/client/src/components/world/Tile.tsx: Individual 1x1 plane meshes used exclusively in Editor Mode so admins can paint textures and raise/lower specific vertices.
+
+Admin & Editor Tools
+apps/client/src/components/world/EditorToolbar.tsx: The UI for selecting map tools, brush sizes, and picking objects from the searchable objects dictionary to spawn on the map.
+
+apps/client/src/components/admin/CacheEditor.tsx: An in-game database UI. Allows admins to create/edit ObjectDefinitions (models, interactable data, loot tables), saves to the server, and instantly updates the local React state without refreshing.
+
+apps/client/src/components/world/AdminMinimap.tsx: A top-down 2D canvas representation of the world to easily generate and navigate chunks.

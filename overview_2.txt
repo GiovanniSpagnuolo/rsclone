@@ -1,0 +1,44 @@
+🎮 OSRS-Clone Web Engine: Project Architecture & File Map
+🏗️ System Architecture Overview
+Core Stack: React, Three.js (@react-three/fiber, @react-three/drei), Node.js, Express, Socket.io, Prisma (SQLite).
+Game Loop: Server-authoritative 600ms tick engine. The client interpolates movement between ticks using Barycentric math to hug 3D terrain geometry
+Thick Client Model: The client downloads a monolithic JSON payload (terrain, spawns, object definitions) and binary .glb files into the browser's IndexedDB on login.
+Performance Strategy: The game does not query the database for environment data during active gameplay.
+Developer Directives: Code must be kept strictly modular to avoid massive file uploads. Do not overly comment code or use "fix here" placeholders unless explicitly requested.
+📂 Backend (apps/server)
+Core Setup & Game Loop
+apps/server/index.js: The main entry point. Initializes Express, mounts REST routes, sets up Socket.io, loads the RAM cache, and starts the 600ms tick engine.
+apps/server/src/game/engine.js: Manages the 600ms server tick loop, processes player movement queues, and broadcasts state to active Socket.io clients.
+apps/server/src/game/mapManager.js: Handles loading SQLite MapChunk data into server RAM for fast collision/routing checks.
+apps/server/src/game/cacheManager.js: Parses ObjectDefinition JSON fields into server RAM. Updated to support reloading server RAM without an automatic global version bump.
+API Routes
+apps/server/src/routes/auth.js: Handles player authentication and login payload.
+apps/server/src/routes/map.js: Handles fetching, generating, and saving terrain chunks.
+apps/server/src/routes/spawns.js: Handles CRUD operations for MapSpawn entities (placing objects with X, Y, Plane, and Rotation).
+apps/server/src/routes/cache.js: Serves the /full monolithic cache payload. Now includes a dedicated /admin/cache/bump route to trigger manual global version updates.
+Scripts & Database
+prisma/schema.prisma: Defines the SQLite schema (MapChunk, MapSpawn, ObjectDefinition, and CacheMeta).
+apps/server/src/scripts/seedChunks.js: CLI script to generate empty 8x8 terrain chunks and automatically bump the global CacheMeta version.
+💻 Frontend (apps/client)
+Entry & Network
+apps/client/src/App.tsx: Main React entry point. Renders the <GameLoader /> first.
+apps/client/src/network/socket.ts: Manages the Socket.io connection singleton.
+apps/client/src/network/useGameEngine.ts: Custom hook that subscribes to the socket and provides position, serverMsg, and admin rights to the UI.
+Cache & Environment Utilities
+apps/client/src/utils/assetCache.ts: Manages the local IndexedDB. Updated with a memoryWorldState RAM cache to provide instant data lookups for world entities.
+apps/client/src/components/world/Environment.tsx: [NEW] Injects a global World-Space Radial Fog shader. Manages the day/night interpolation cycle and smoothly lerps fog center-point based on player movement.
+apps/client/src/utils/terrainMath.ts: Contains the getExactHeight function for precise Y-axis values on sloped terrain triangles.
+Core Game Components
+apps/client/src/components/GameLoader.tsx: The Thick Client pre-loader. Compares cache versions and downloads monolithic payloads and missing assets.
+apps/client/src/components/world/GameWorld.tsx: The master game component. Mounts the <Environment /> and coordinates logical/visual state for chunks and spawns.
+apps/client/src/components/world/GridMap.tsx: The Three.js environment loop. Renders terrain and iterates over the spawns array to place entities.
+apps/client/src/components/world/CameraManager.tsx: OrbitControls setup that tracks visual frame-by-frame deltas to prevent jittering.
+World Entities
+apps/client/src/components/entities/LocalPlayer.tsx: The player mesh. Interpolates X/Z movement smoothly over network ticks and calculates Y-height.
+apps/client/src/components/entities/GameObject.tsx: A modular wrapper for 3D assets. Now independently retrieves its own definition and Blob URL from the RAM cache.
+apps/client/src/components/world/DumbChunk.tsx: Optimized, merged BufferGeometry mesh used in Play Mode. Now supports isDimmed logic for editor visualization.\
+apps/client/src/components/world/Tile.tsx: 1x1 plane meshes for Editor Mode. Updated with a ref-based vertex update strategy to optimize performance during terrain manipulation.
+Admin & Editor Tools
+apps/client/src/components/world/EditorToolbar.tsx: UI for map tools and searchable object dictionary.
+apps/client/src/components/admin/CacheEditor.tsx: Database UI for ObjectDefinitions. Updated to decouple saving data from triggering global version bumps.
+apps/client/src/components/world/AdminMinimap.tsx: 2D canvas for world navigation and chunk generation.
