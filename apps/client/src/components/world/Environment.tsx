@@ -113,7 +113,10 @@ export const Environment = ({ fogCenter, disableFog = false, worldTime }: Enviro
       t = ((Math.sin(time) + 1) / 2);
     }
 
-    const dayFactor = clamp01(0.5 + 0.5 * Math.sin((t - 0.25) * Math.PI * 2));
+      // --- DEVELOPMENT OVERRIDE: Lock to High Noon ---
+          // const dayFactor = clamp01(0.5 + 0.5 * Math.sin((t - 0.25) * Math.PI * 2));
+          const dayFactor = 1.0;
+          // -----------------------------------------------
     const nightFloor = settings?.nightIntensityFloor ?? 0.28;
 
     const dayAmbient = new THREE.Color(settings?.dayAmbientColor ?? '#ffffff');

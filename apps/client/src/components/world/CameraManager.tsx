@@ -1,56 +1,70 @@
-import { useFrame } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
 import { useRef, useEffect } from 'react';
+import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { visualPlayerPos } from '../entities/LocalPlayer';
 
 interface CameraManagerProps {
   targetPosition: [number, number, number];
-  isFlyMode: boolean;
-  isLocked: boolean;
+  isFlyMode?: boolean;
+  isLocked?: boolean;
 }
 
 export const CameraManager = ({ targetPosition, isFlyMode, isLocked }: CameraManagerProps) => {
-  const controlsRef = useRef<any>(null);
-  const prevTarget = useRef(new THREE.Vector3());
+  const angleRef = useRef(Math.PI / 4);
+  const pitchRef = useRef(Math.PI / 4);
+  const distanceRef = useRef(15);
+  const keys = useRef<{ [key: string]: boolean }>({});
 
-  // Resync the camera when exiting Editor Mode to prevent a wild jump
+  // Fallback target for Editor Mode panning
+  const fallbackTarget = useRef(new THREE.Vector3(...targetPosition));
+
   useEffect(() => {
-    if (!isFlyMode && controlsRef.current) {
-      prevTarget.current.copy(visualPlayerPos);
-      
-      // Default offset behind and above the player
-      const offset = new THREE.Vector3(0, 10, 15);
-      controlsRef.current.object.position.copy(visualPlayerPos).add(offset);
-      controlsRef.current.target.copy(visualPlayerPos);
-      controlsRef.current.update();
-    }
-  }, [isFlyMode]);
+    const handleKeyDown = (e: KeyboardEvent) => { keys.current[e.key] = true; };
+    const handleKeyUp = (e: KeyboardEvent) => { keys.current[e.key] = false; };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
 
-  useFrame(() => {
-    if (controlsRef.current && !isFlyMode) {
-      // Calculate how far the player moved this exact frame
-      const deltaTarget = new THREE.Vector3().subVectors(visualPlayerPos, prevTarget.current);
-      
-      // THE FIX: Shift the camera's physical position by that exact same distance
-      controlsRef.current.object.position.add(deltaTarget);
-      
-      // Lock the focus target to the player
-      controlsRef.current.target.copy(visualPlayerPos);
-      controlsRef.current.update();
-      
-      // Save this position for the next frame's math
-      prevTarget.current.copy(visualPlayerPos);
+  useFrame(({ scene, camera }) => {
+    if (isLocked) return;
+
+    if (keys.current['ArrowLeft']) angleRef.current += 0.05;
+    if (keys.current['ArrowRight']) angleRef.current -= 0.05;
+    if (keys.current['ArrowUp']) pitchRef.current = Math.max(0.1, pitchRef.current - 0.05);
+    if (keys.current['ArrowDown']) pitchRef.current = Math.min(Math.PI / 2.5, pitchRef.current + 0.05);
+
+    let focusPoint = new THREE.Vector3();
+
+    // 1. Find the continuously interpolating player mesh
+    const playerMesh = scene.getObjectByName('localPlayer');
+    
+    if (playerMesh && !isFlyMode) {
+      // PLAY MODE: Read the exact visual coordinates frame-by-frame
+      playerMesh.getWorldPosition(focusPoint);
+    } else {
+      // EDITOR MODE: Smoothly pan to the selected chunk
+      fallbackTarget.current.lerp(new THREE.Vector3(...targetPosition), 0.1);
+      focusPoint.copy(fallbackTarget.current);
     }
+
+    const offsetX = Math.cos(angleRef.current) * distanceRef.current;
+    const offsetZ = Math.sin(angleRef.current) * distanceRef.current;
+    const offsetY = Math.cos(pitchRef.current) * distanceRef.current;
+
+    // 2. HARD SET the camera position to maintain a perfect orbit (No elastic rubber-banding!)
+    camera.position.set(
+      focusPoint.x + offsetX,
+      focusPoint.y + offsetY,
+      focusPoint.z + offsetZ
+    );
+    
+    camera.lookAt(focusPoint);
   });
 
-  return (
-    <OrbitControls 
-      ref={controlsRef}
-      enabled={!isLocked}
-      maxPolarAngle={Math.PI / 2.1} // Prevent going below ground
-      minDistance={2} 
-      maxDistance={50} 
-    />
-  );
+  return null;
 };

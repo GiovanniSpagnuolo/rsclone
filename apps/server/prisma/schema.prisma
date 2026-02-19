@@ -46,13 +46,14 @@ model Character {
 // --- DEFINITIONS (The Blueprints) ---
 
 model ObjectDefinition {
-  id               Int      @id
+  id               Int         @id
   name             String
-  modelId          Int
+  modelId          Int?
   depletedModelId  Int?
-  isWalkable       Boolean  @default(false)
-  interactableData String   @default("{}") // JSON string
-  lootTable        String   @default("[]") // JSON string
+  proceduralType   String?
+  isWalkable       Boolean     @default(false)
+  interactableData String      @default("{}")
+  lootTable        String      @default("[]")
   spawns           MapSpawn[]
 }
 
@@ -96,8 +97,16 @@ model CacheMeta {
 }
 
 model TerrainMaterial {
-  id         Int      @id
-  name       String
-  color      String   @default("#2d5a27")
-  isWalkable Boolean  @default(true)
+  id             Int      @id
+  name           String
+  color          String   @default("#2d5a27")
+  textureUrl     String?
+  physicsProfile String   @default("DIRT")
+  isWalkable     Boolean  @default(true)
+}
+model WorldSettings {
+  id             Int    @id @default(1)
+  spawnX         Float  @default(400.0)
+  spawnZ         Float  @default(400.0)
+  worldName      String @default("New World")
 }

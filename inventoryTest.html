@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MVP Grid Inventory</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #1e1e1e;
+            color: #fff;
+            margin: 0;
+            padding: 20px;
+            overflow: hidden;
+        }
+
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .controls input {
+            width: 50px;
+        }
+
+        .layout {
+            display: flex;
+            gap: 40px;
+        }
+
+        .ground-container {
+            width: 300px;
+            height: 600px;
+            background: #2a2a2a;
+            border: 2px dashed #555;
+            position: relative;
+            padding: 10px;
+            box-sizing: border-box;
+            display: flex;
+            align-content: flex-start;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+
+        .inventory-wrapper {
+            position: relative;
+        }
+
+        .inventory-grid {
+            display: grid;
+            background: #000;
+            gap: 1px;
+            border: 1px solid #444;
+        }
+
+        .slot {
+            background: #333;
+            box-sizing: border-box;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            font-size: 11px;
+            color: #888;
+            user-select: none;
+        }
+
+        .item {
+            position: absolute;
+            box-sizing: border-box;
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            background: rgba(41, 128, 185, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: grab;
+            user-select: none;
+            touch-action: none;
+            font-weight: bold;
+            font-size: 12px;
+            transition: background 0.1s;
+        }
+
+        .item.on-ground {
+            position: relative;
+            top: 0 !important;
+            left: 0 !important;
+            margin-bottom: 5px;
+        }
+
+        .item.dragging {
+            cursor: grabbing;
+            z-index: 1000;
+            opacity: 0.9;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+            pointer-events: none;
+        }
+
+        .valid-drop {
+            background: rgba(39, 174, 96, 0.8) !important;
+        }
+
+        .invalid-drop {
+            background: rgba(192, 57, 43, 0.8) !important;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <label>Cols (X): <input type="number" id="inputCols" value="3" min="1"></label>
+        <label>Rows (Y): <input type="number" id="inputRows" value="3" min="1"></label>
+        <label>Slot Size (px): <input type="number" id="inputSize" value="100" min="20"></label>
+        <button id="btnUpdateGrid">Update Grid</button>
+        <button id="btnCreateItem">Create Ground Item</button>
+        <span style="margin-left:20px; color:#aaa;">(Drag items. Press SPACE while dragging non-squares to rotate)</span>
+    </div>
+
+    <div class="layout">
+        <div class="ground-container" id="ground"></div>
+        <div class="inventory-wrapper">
+            <div class="inventory-grid" id="grid"></div>
+        </div>
+    </div>
+
+<script>
+const State = {
+    cols: 3,
+    rows: 3,
+    slotSize: 100,
+    gridData: [],
+    items: {} 
+};
+
+
+const Utils = {
+    generateGUID: () => crypto.randomUUID(),
+    coordsToIndex: (col, row) => row * State.cols + col,
+    indexToCoords: (index) => ({ col: index % State.cols, row: Math.floor(index / State.cols) })
+};
+
+const GridLogic = {
+    initArray: () => {
+        State.gridData = Array(State.cols * State.rows).fill(-1);
+    },
+
+    checkSlots: (startIndex, itemCols, itemRows, itemGuid) => {
+        const start = Utils.indexToCoords(startIndex);
+        
+        if (start.col + itemCols > State.cols || start.row + itemRows > State.rows) {
+            return false; 
+        }
+
+        for (let r = 0; r < itemRows; r++) {
+            for (let c = 0; c < itemCols; c++) {
+                const checkCol = start.col + c;
+                const checkRow = start.row + r;
+                const index = Utils.coordsToIndex(checkCol, checkRow);
+                
+                const existingItem = State.gridData[index];
+                if (existingItem !== -1 && existingItem !== itemGuid) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    },
+
+    removeItem: (guid) => {
+        for (let i = 0; i < State.gridData.length; i++) {
+            if (State.gridData[i] === guid) State.gridData[i] = -1;
+        }
+    },
+
+    placeItem: (startIndex, itemCols, itemRows, guid) => {
+        GridLogic.removeItem(guid); 
+        const start = Utils.indexToCoords(startIndex);
+        
+        for (let r = 0; r < itemRows; r++) {
+            for (let c = 0; c < itemCols; c++) {
+                const index = Utils.coordsToIndex(start.col + c, start.row + r);
+                State.gridData[index] = guid;
+            }
+        }
+    }
+};
+
+const UI = {
+    buildGrid: () => {
+        const gridEl = document.getElementById('grid');
+        gridEl.style.gridTemplateColumns = `repeat(${State.cols}, ${State.slotSize}px)`;
+        gridEl.style.gridTemplateRows = `repeat(${State.rows}, ${State.slotSize}px)`;
+        gridEl.innerHTML = '';
+
+        GridLogic.initArray();
+        
+        for (let i = 0; i < State.cols * State.rows; i++) {
+            const slot = document.createElement('div');
+            slot.className = 'slot';
+            slot.id = `slot-${i}`;
+            gridEl.appendChild(slot);
+        }
+        UI.updateSlotLabels();
+    },
+
+    updateSlotLabels: () => {
+        for (let i = 0; i < State.gridData.length; i++) {
+            const coords = Utils.indexToCoords(i);
+            const val = State.gridData[i] === -1 ? '-1' : State.gridData[i].substring(0,4);
+            document.getElementById(`slot-${i}`).innerText = `[${i}]\n(${coords.row},${coords.col})\n${val}`;
+        }
+    },
+
+    syncItemVisuals: (guid) => {
+        const item = State.items[guid];
+        const el = item.element;
+        
+        const visualCols = item.rotated ? item.rows : item.cols;
+        const visualRows = item.rotated ? item.cols : item.rows;
+        
+        el.style.width = `${visualCols * State.slotSize}px`;
+        el.style.height = `${visualRows * State.slotSize}px`;
+    },
+
+    createItemElement: (cols, rows, textId) => {
+        const guid = Utils.generateGUID();
+        const el = document.createElement('div');
+        el.className = 'item on-ground';
+        el.innerText = `${textId}\n${cols}x${rows}`;
+        
+        State.items[guid] = { guid, cols, rows, rotated: false, element: el };
+        UI.syncItemVisuals(guid);
+        
+        el.addEventListener('pointerdown', (e) => Interaction.startDrag(e, guid));
+        document.getElementById('ground').appendChild(el);
+    }
+};
+
+    const DragState = {
+        active: false,
+        itemGuid: null,
+        element: null,
+        offsetX: 0,
+        offsetY: 0,
+        grabbedCol: 0,
+        grabbedRow: 0,
+        targetSlotIndex: -1,
+        isValid: false
+    };
+
+    const Interaction = {
+        startDrag: (e, guid) => {
+            const itemData = State.items[guid];
+            const el = itemData.element;
+            
+            const rect = el.getBoundingClientRect();
+            DragState.offsetX = e.clientX - rect.left;
+            DragState.offsetY = e.clientY - rect.top;
+            
+            DragState.grabbedCol = Math.floor(DragState.offsetX / State.slotSize);
+            DragState.grabbedRow = Math.floor(DragState.offsetY / State.slotSize);
+            
+            el.classList.remove('on-ground');
+            el.classList.add('dragging');
+            document.body.appendChild(el);
+
+            DragState.active = true;
+            DragState.itemGuid = guid;
+            DragState.element = el;
+            
+            Interaction.moveElement(e.clientX, e.clientY);
+
+            window.addEventListener('pointermove', Interaction.onDrag);
+            window.addEventListener('pointerup', Interaction.endDrag);
+            window.addEventListener('keydown', Interaction.onKeyDown);
+        },
+
+        onDrag: (e) => {
+            Interaction.moveElement(e.clientX, e.clientY);
+            Interaction.evaluateHover(e.clientX, e.clientY);
+        },
+
+        moveElement: (x, y) => {
+            DragState.element.style.left = `${x - DragState.offsetX}px`;
+            DragState.element.style.top = `${y - DragState.offsetY}px`;
+        },
+
+        evaluateHover: (x, y) => {
+            const gridEl = document.getElementById('grid');
+            const gridRect = gridEl.getBoundingClientRect();
+            const el = DragState.element;
+            el.classList.remove('valid-drop', 'invalid-drop');
+
+            if (x >= gridRect.left && x <= gridRect.right && y >= gridRect.top && y <= gridRect.bottom) {
+                const relX = x - gridRect.left;
+                const relY = y - gridRect.top;
+                
+                const mouseCol = Math.floor(relX / State.slotSize);
+                const mouseRow = Math.floor(relY / State.slotSize);
+                
+                const targetCol = mouseCol - DragState.grabbedCol;
+                const targetRow = mouseRow - DragState.grabbedRow;
+                
+                const item = State.items[DragState.itemGuid];
+                const checkCols = item.rotated ? item.rows : item.cols;
+                const checkRows = item.rotated ? item.cols : item.rows;
+
+                if (targetCol < 0 || targetRow < 0 || targetCol + checkCols > State.cols || targetRow + checkRows > State.rows) {
+                    DragState.targetSlotIndex = -1;
+                    DragState.isValid = false;
+                    el.classList.add('invalid-drop');
+                    return;
+                }
+
+                const index = Utils.coordsToIndex(targetCol, targetRow);
+                DragState.isValid = GridLogic.checkSlots(index, checkCols, checkRows, DragState.itemGuid);
+                DragState.targetSlotIndex = index;
+
+                el.classList.add(DragState.isValid ? 'valid-drop' : 'invalid-drop');
+            } else {
+                DragState.targetSlotIndex = -1;
+                DragState.isValid = false;
+            }
+        },
+
+        endDrag: (e) => {
+            window.removeEventListener('pointermove', Interaction.onDrag);
+            window.removeEventListener('pointerup', Interaction.endDrag);
+            window.removeEventListener('keydown', Interaction.onKeyDown);
+
+            const itemData = State.items[DragState.itemGuid];
+            const el = DragState.element;
+            
+            el.classList.remove('dragging', 'valid-drop', 'invalid-drop');
+
+            const gridRect = document.getElementById('grid').getBoundingClientRect();
+            const isOverGround = e.clientX < gridRect.left;
+
+            if (DragState.targetSlotIndex !== -1 && DragState.isValid) {
+                const checkCols = itemData.rotated ? itemData.rows : itemData.cols;
+                const checkRows = itemData.rotated ? itemData.cols : itemData.rows;
+                
+                GridLogic.placeItem(DragState.targetSlotIndex, checkCols, checkRows, itemData.guid);
+                
+                const coords = Utils.indexToCoords(DragState.targetSlotIndex);
+                el.style.left = `${coords.col * State.slotSize}px`;
+                el.style.top = `${coords.row * State.slotSize}px`;
+                document.getElementById('grid').parentElement.appendChild(el);
+                
+            } else {
+                GridLogic.removeItem(itemData.guid);
+                el.classList.add('on-ground');
+                document.getElementById('ground').appendChild(el);
+            }
+
+            UI.updateSlotLabels();
+            DragState.active = false;
+        },
+
+        onKeyDown: (e) => {
+            if (e.code === 'Space' && DragState.active) {
+                e.preventDefault();
+                const item = State.items[DragState.itemGuid];
+                
+                if (item.cols !== item.rows) {
+                    item.rotated = !item.rotated;
+                    UI.syncItemVisuals(item.guid);
+                    
+                    const tempX = DragState.offsetX;
+                    DragState.offsetX = DragState.offsetY;
+                    DragState.offsetY = tempX;
+                    
+                    DragState.grabbedCol = Math.floor(DragState.offsetX / State.slotSize);
+                    DragState.grabbedRow = Math.floor(DragState.offsetY / State.slotSize);
+                    
+                    Interaction.onDrag({ clientX: e.clientX, clientY: e.clientY });
+                }
+            }
+        }
+    };
+
+document.getElementById('btnUpdateGrid').addEventListener('click', () => {
+    State.cols = parseInt(document.getElementById('inputCols').value);
+    State.rows = parseInt(document.getElementById('inputRows').value);
+    State.slotSize = parseInt(document.getElementById('inputSize').value);
+    
+    document.getElementById('ground').innerHTML = '';
+    State.items = {}; 
+    UI.buildGrid();
+});
+
+let itemCount = 1;
+document.getElementById('btnCreateItem').addEventListener('click', () => {
+    const c = Math.floor(Math.random() * 2) + 1; 
+    const r = Math.floor(Math.random() * 3) + 1; 
+    UI.createItemElement(c, r, `Item-${itemCount++}`);
+});
+
+UI.buildGrid();
+</script>
+</body>
+</html>

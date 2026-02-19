@@ -1,3 +1,2 @@
 @echo off
-node seedChunks
-pause
+echo fuck apple its a piece of shit

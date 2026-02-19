@@ -1,0 +1,40 @@
+Can you help me make a MVP javascript HTML file that has a "ground" container on the left, a button to "create ground item", and an inventory on the right side of the screen. Here's the break down. This should closely mimic DayZ inventory system.
+
+Ability to set slot size (say 100px) and that will setup the squares (100x100)
+The inventory will have a certain number of slots, controls at the top allow the user to change the X and Y number of slots. Start with 3 rows x 3 columns. This must be saved into a variable to be used by our math later and must update if they user changes these values.
+
+Item widget
+Should be a widget that contains a made-up item. This should randomly be setup to have a "rows/cols" size. We multiple this by our slot size. Users can drag these item widgets and drop them on slots within the inventory system OR on the ground (ground does not have slots.
+
+When a user "picks up" the item by dragging it, we show the full size of the item on the screen so they know how much space the item should take up.
+
+If the user presses space and the item is NOT a square, we allow it to rotate 90 OR 0, do not allow 180. 
+
+Each slot will contain a number. 0 thru lastIndex. We then also show the coords as well as the itemIndex of any item using that slot.
+For example a 3x3 grid would look like this
+[0, (0,0), -1] [1, (0,1), -1] [2, (0,2), 1511]
+[3, (1,0), -1] [4, (1,1), -1] [5, (1,2), 1511]
+[6, (2,0), -1] [7, (2,1), -1] [8,(2,2), -1]
+
+We need the following functions:
+Index to Coords
+Coords to Index
+
+Then we need get the item size (rows & cols) and check if the user has it rotated (then we switch rows & cols).
+When the user drags over a slot, we simply run CheckSlots(slot,X,Y)
+
+For example, with our 3x3 grid:
+
+CheckSlots(2,1,2)
+Would do this
+
+We look at slot 2 (0,2)
+It has item 1511, so we check if WE are item 1511. If so, continue (we may have rotated). Otherwise, return false
+
+We have item 1222, so it fails. We turn the widget RED to show the user they cannot drop here.
+
+The user moves to slot 1 (0,1) - this has nothing in it! Great! Let's check if we need to check other slots? 1,2 means we need to check the slot below this. We simply do some math (inventory size * rows). We made a 3x3 inventory, so for our example, the next slot we need to check for our 1x2 item is curSlot (1) + inventoryCols (3) = slot 4. Does slot 4 have anything? NO! -1 means empty! We can drop this item in these slots! The widget turns green to show the user this is ALLOWED. User drops, we clear any slots this item WAS in and sets the new values.
+
+One thing to watch out for - all items should be given a GUID while in the inventory - this will prevent items with the same ID (from the database) from getting corrupted or overwritten.
+
+Do you understand? Can you produce a simple javascript/html file with some placeholder TEXT for items? We should be able to generate items on the ground and then attempt to add them to the inventory. 

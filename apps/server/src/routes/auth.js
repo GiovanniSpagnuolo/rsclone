@@ -13,6 +13,15 @@ router.post('/register', async (req, res) => {
   try {
     const passwordHash = await bcrypt.hash(password, 10);
 
+      // Inside your character creation/registration route
+      const worldSettings = await prisma.worldSettings.findUnique({ where: { id: 1 } });
+      const startPos = {
+        x: worldSettings?.spawnX ?? 400,
+        y: 0,
+        z: worldSettings?.spawnZ ?? 400
+      };
+
+      
     const user = await prisma.user.create({
       data: {
         username,
@@ -21,7 +30,7 @@ router.post('/register', async (req, res) => {
         characters: {
           create: {
             displayName: username,
-            position: JSON.stringify({ x: 3200, y: 3200, plane: 0 }),
+            position: JSON.stringify(startPos),
             skills: JSON.stringify({ hitpoints: { xp: 1154 } }),
             attributes: JSON.stringify({ hitpoints: 10 })
           }

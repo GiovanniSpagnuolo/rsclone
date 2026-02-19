@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { GridMap } from './GridMap';
 import { EditorToolbar } from './EditorToolbar';
@@ -9,6 +9,12 @@ import { CacheEditor } from '../admin/CacheEditor';
 import { useGameEngine } from '../../network/useGameEngine';
 import { Environment } from './Environment';
 import { MaterialEditor } from '../admin/MaterialEditor'
+import { WaterPlane } from './WaterPlane';
+import { Stats } from '@react-three/drei';
+import { PlayerHUD } from '../ui/PlayerHUD';
+import { InventoryHUD } from '../ui/InventoryHUD';
+import { ContextMenu } from '../ui/ContextMenu';
+import { getSocket } from '../../network/socket';
 
 interface GameWorldProps {
   initialData: {
@@ -46,10 +52,15 @@ const [showCacheEditor, setShowCacheEditor] = useState(false);
   const [showSurrounding, setShowSurrounding] = useState(true);
   const [dimSurrounding, setDimSurrounding] = useState(true);
   
+    const [menuState, setMenuState] = useState<{x: number, y: number, spawn: any, def: any} | null>(null);
+    const [pendingAction, setPendingAction] = useState<{ action: string, objectDefId: number, x: number, z: number } | null>(null);
   
-  
+   
+    
   const [spawnObjectId, setSpawnObjectId] = useState<number>(1);
   const [spawnRotation, setSpawnRotation] = useState<number>(0);
+    
+    
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Control') setIsCtrlPressed(true); };
@@ -59,13 +70,15 @@ const [showCacheEditor, setShowCacheEditor] = useState(false);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('keyup', handleKeyUp); };
   }, []);
 
-  useEffect(() => {
-    if (activeChunkIds.length === 0 && position[0] !== 3200) {
-      const cx = Math.floor(position[0] / 8);
-      const cz = Math.floor(position[2] / 8);
-      setActiveChunkIds([`${cx}_${cz}`]);
-    }
-  }, [position, activeChunkIds.length]);
+    useEffect(() => {
+        const cx = Math.floor(position[0] / 8);
+        const cz = Math.floor(position[2] / 8);
+        const currentChunkId = `${cx}_${cz}`;
+
+        if (!activeChunkIds.includes(currentChunkId)) {
+          setActiveChunkIds([currentChunkId]);
+        }
+      }, [position, activeChunkIds]);
 
   const handleGenerateChunk = async (chunkId: string) => {
     const res = await fetch('http://localhost:3001/map/generate', {
@@ -96,6 +109,65 @@ const [showCacheEditor, setShowCacheEditor] = useState(false);
       console.error(err);
     }
   };
+    
+    // 2. THE DISTANCE TRACKER LOOP
+    useEffect(() => {
+        if (pendingAction) {
+          const dist = Math.abs(position[0] - pendingAction.x) + Math.abs(position[2] - pendingAction.z);
+          if (dist <= 1) {
+            // We arrived! Fire the action to the server.
+            const socket = getSocket();
+            if (socket) socket.emit('interact_object', pendingAction);
+            setPendingAction(null); // Clear the queue
+          }
+        }
+      }, [position, pendingAction]);
+
+      const handleMenuActionSelect = (actionKey: string, spawn: any, def: any) => {
+        if (actionKey === 'Examine') {
+          console.log(`It's a ${def.name}.`);
+          return;
+        }
+          
+          
+        // Right-Click Action Chosen: Walk there, then execute.
+        const socket = getSocket();
+        if (socket) {
+          socket.emit('request_move', { x: spawn.x, y: spawn.y });
+          setPendingAction({ action: actionKey, objectDefId: def.id, x: spawn.x, z: spawn.y });
+        }
+      };
+    
+    const handleCloseMenu = useCallback(() => {
+      setMenuState(null);
+    }, []);
+    
+    const handleObjectClick = (e: any, spawn: any, def: any) => {
+        if (isEditorMode) return;
+        
+        e.stopPropagation(); // Stops R3F 3D piercing
+        if (e.nativeEvent) e.nativeEvent.stopPropagation(); // Kills the native HTML bubble
+
+        if (e.button === 2 || e.type === 'contextmenu') {
+          setMenuState({ x: e.clientX, y: e.clientY, spawn, def });
+        } else if (e.button === 0 || e.type === 'click') {
+          const socket = getSocket();
+          if (socket) socket.emit('request_move', { x: spawn.x, y: spawn.y });
+
+          let defaultAction = null;
+          if (def.interactableData) {
+            try {
+              const data = typeof def.interactableData === 'string' ? JSON.parse(def.interactableData) : def.interactableData;
+              if (data && data.actions) defaultAction = Object.keys(data.actions)[0];
+            } catch (err) {}
+          }
+
+          if (defaultAction) {
+            setPendingAction({ action: defaultAction, objectDefId: def.id, x: spawn.x, z: spawn.y });
+          }
+          setMenuState(null);
+        }
+      };
 
   // --- NEW FOG TARGET LOGIC ---
   // Editor Mode Target Calculation
@@ -118,19 +190,30 @@ const [showCacheEditor, setShowCacheEditor] = useState(false);
   const fogCenterTarget = isEditorMode ? editorFogCenter : playFogCenter;
   const cameraTarget = isEditorMode ? editorFogCenter : position;
   // ----------------------------
+    useEffect(() => {
+        console.log(`[DEBUG 2 - GameWorld] 🔄 Menu State Changed: ${menuState ? 'OPENING' : 'CLOSED'}`);
+      }, [menuState]);
 
+      useEffect(() => {
+        console.log(`[DEBUG 2 - GameWorld] 🏃 Pending Action Changed:`, pendingAction);
+      }, [pendingAction]);
+    
   return (
-    <div style={{ width: '100vw', height: '100vh', position: 'absolute', top: 0, left: 0 }}>
-      {!isEditorMode && (
-        <div style={{ position: 'absolute', top: 10, left: 10, zIndex: 10, color: 'white' }}>
-          <p>Status: 🟢 Connected</p>
-          <p>Server: {serverMsg}</p>
-          <p>Pos: X:{position[0]} Z:{position[2]}</p>
-        </div>
-      )}
-
+          <div style={{ width: '100vw', height: '100vh', position: 'absolute', top: 0, left: 0 }} onContextMenu={(e) => e.preventDefault()}>
+          {/* Render Context Menu if State exists */}
+          {!isEditorMode && (
+                  <ContextMenu
+                    menuState={menuState}
+                    onClose={handleCloseMenu}
+                    onActionSelect={handleMenuActionSelect}
+                  />
+                )}
+          {/* 1. Add the HUD outside the Canvas */}
+          {!isEditorMode && <PlayerHUD position={position} />}
+          
+          
       {rights >= 2 && (
-        <EditorToolbar 
+        <EditorToolbar
           objects={initialData.objects}
           isEditorMode={isEditorMode}
           setIsEditorMode={setIsEditorMode}
@@ -151,14 +234,14 @@ const [showCacheEditor, setShowCacheEditor] = useState(false);
           spawnRotation={spawnRotation}
           setSpawnRotation={setSpawnRotation}
           onSave={saveSelectedChunks}
-          onReload={() => window.location.reload()} 
-		  materials={initialData.materials}
-		  setShowMaterialEditor={setShowMaterialEditor}
+          onReload={() => window.location.reload()}
+          materials={initialData.materials}
+          setShowMaterialEditor={setShowMaterialEditor}
         />
       )}
 
       {showMinimap && (
-        <AdminMinimap 
+        <AdminMinimap
           chunks={chunks}
           materials={initialData.materials || {}} // <-- Add this line
           activeChunkIds={activeChunkIds}
@@ -171,21 +254,24 @@ const [showCacheEditor, setShowCacheEditor] = useState(false);
       {showCacheEditor && (
         <CacheEditor onClose={() => setShowCacheEditor(false)} />
       )}
-	  
-	  {showMaterialEditor && (
+      
+      {showMaterialEditor && (
         <MaterialEditor onClose={() => setShowMaterialEditor(false)} />
       )}
+          
+          <InventoryHUD />
 
       <Canvas shadows>
-        <Environment 
-          fogCenter={fogCenterTarget} 
-          disableFog={isEditorMode} 
-          worldTime={worldTime} 
+          <Stats />
+        <Environment
+          fogCenter={fogCenterTarget}
+          disableFog={isEditorMode}
+          worldTime={worldTime}
         />
         
-        <GridMap 
-          chunks={chunks} 
-          setChunks={setChunks} 
+        <GridMap
+          chunks={chunks}
+          setChunks={setChunks}
           activeTool={isEditorMode ? activeTool : 'none'}
           activeMaterial={activeMaterial}
           brushSize={brushSize}
@@ -196,19 +282,25 @@ const [showCacheEditor, setShowCacheEditor] = useState(false);
           showSurrounding={showSurrounding}
           dimSurrounding={dimSurrounding}
           spawns={spawns}
+          objects={initialData.objects}
           setSpawns={setSpawns}
           spawnObjectId={spawnObjectId}
           spawnRotation={spawnRotation}
-		  materials={initialData.materials}
+          materials={initialData.materials}
+          onObjectClick={handleObjectClick}
+          onGroundClick={() => setPendingAction(null)}
         />
+          
+          <WaterPlane centerPosition={fogCenterTarget} />
         
         {!isEditorMode && <LocalPlayer position={position} chunks={chunks} />}
-        
-        <CameraManager 
-          targetPosition={cameraTarget} 
-          isFlyMode={isEditorMode} 
-          isLocked={isCtrlPressed}
-        />
+    
+                  
+                  <CameraManager
+                    targetPosition={cameraTarget}
+                    isFlyMode={isEditorMode}
+                    isLocked={isCtrlPressed}
+                  />
 
       </Canvas>
     </div>

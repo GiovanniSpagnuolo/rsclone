@@ -36,9 +36,36 @@ router.get('/full', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+router.post('/admin/materials', async (req, res) => {
+  const { id, name, color, textureUrl, physicsProfile, isWalkable } = req.body;
+  try {
+    await prisma.terrainMaterial.upsert({
+      where: { id: Number(id) },
+      update: {
+        name,
+        color,
+        textureUrl: textureUrl || null,
+        physicsProfile: physicsProfile || 'DIRT',
+        isWalkable
+      },
+      create: {
+        id: Number(id),
+        name,
+        color,
+        textureUrl: textureUrl || null,
+        physicsProfile: physicsProfile || 'DIRT',
+        isWalkable
+      }
+    });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 router.post('/admin/objects', async (req, res) => {
-  const { id, name, modelId, depletedModelId, isWalkable, interactableData, lootTable } = req.body;
+  // Added proceduralType to the destructuring
+  const { id, name, modelId, depletedModelId, proceduralType, isWalkable, interactableData, lootTable } = req.body;
   
   const safeInteractable = typeof interactableData === 'object' ? JSON.stringify(interactableData) : String(interactableData || '{}');
   const safeLootTable = typeof lootTable === 'object' ? JSON.stringify(lootTable) : String(lootTable || '[]');
@@ -46,22 +73,24 @@ router.post('/admin/objects', async (req, res) => {
   try {
     await prisma.objectDefinition.upsert({
       where: { id: Number(id) },
-      update: { 
-        name, 
-        modelId: Number(modelId), 
-        depletedModelId: depletedModelId ? Number(depletedModelId) : null, 
-        isWalkable, 
-        interactableData: safeInteractable, 
-        lootTable: safeLootTable 
+      update: {
+        name,
+        modelId: modelId ? Number(modelId) : null,
+        depletedModelId: depletedModelId ? Number(depletedModelId) : null,
+        proceduralType: proceduralType || null, // NEW
+        isWalkable,
+        interactableData: safeInteractable,
+        lootTable: safeLootTable
       },
-      create: { 
-        id: Number(id), 
-        name, 
-        modelId: Number(modelId), 
-        depletedModelId: depletedModelId ? Number(depletedModelId) : null, 
-        isWalkable, 
-        interactableData: safeInteractable, 
-        lootTable: safeLootTable 
+      create: {
+        id: Number(id),
+        name,
+        modelId: modelId ? Number(modelId) : null,
+        depletedModelId: depletedModelId ? Number(depletedModelId) : null,
+        proceduralType: proceduralType || null, // NEW
+        isWalkable,
+        interactableData: safeInteractable,
+        lootTable: safeLootTable
       }
     });
 
@@ -72,19 +101,6 @@ router.post('/admin/objects', async (req, res) => {
   }
 });
 
-router.post('/admin/materials', async (req, res) => {
-  const { id, name, color, isWalkable } = req.body;
-  try {
-    await prisma.terrainMaterial.upsert({
-      where: { id: Number(id) },
-      update: { name, color, isWalkable },
-      create: { id: Number(id), name, color, isWalkable }
-    });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 router.post('/admin/cache/bump', async (req, res) => {
   try {

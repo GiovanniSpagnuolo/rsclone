@@ -43,17 +43,20 @@ export const startTickEngine = (io) => {
   const TICK_MS = 600;
 
   setInterval(() => {
-    // --- Advance world clock ---
     const tickSec = TICK_MS / 1000;
     const cycle = Number(worldTimeState.settings.cycleLengthSec) || (20 * 60);
     worldTimeState.timeOfDay = (worldTimeState.timeOfDay + tickSec / cycle) % 1;
 
-    // --- Player movement updates (existing logic) ---
     const updates = [];
 
     for (const [socketId, player] of activePlayers.entries()) {
       if (player.path && player.path.length > 0) {
-        const nextStep = player.path.shift();
+        let nextStep = player.path.shift();
+        
+        if (player.isRunning && player.path.length > 0) {
+          nextStep = player.path.shift();
+        }
+
         player.pos.x = nextStep.x;
         player.pos.y = nextStep.y;
 
@@ -63,7 +66,6 @@ export const startTickEngine = (io) => {
 
     if (updates.length > 0) io.emit('tick_update', updates);
 
-    // --- Broadcast world time (cheap & simple: every tick) ---
     io.emit('world_time', getWorldTimePayload());
   }, TICK_MS);
 };

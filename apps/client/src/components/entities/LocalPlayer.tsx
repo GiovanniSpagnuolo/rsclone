@@ -53,7 +53,7 @@ export const LocalPlayer = ({ position, chunks }: LocalPlayerProps) => {
   });
 
   return (
-    <mesh ref={meshRef} castShadow>
+    <mesh ref={meshRef} castShadow name="localPlayer">
       <boxGeometry args={[0.8, 1, 0.8]} />
       <meshStandardMaterial color="#ff0000" />
     </mesh>

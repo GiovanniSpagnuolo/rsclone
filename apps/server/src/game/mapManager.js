@@ -1,17 +1,58 @@
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient();
 export const loadedChunks = new Map();
+const prisma = new PrismaClient();
 
 export const loadChunksIntoRAM = async () => {
+  console.log("Loading pathfinding grid into RAM...");
+  
   const chunks = await prisma.mapChunk.findMany();
-  
-  for (const chunk of chunks) {
-    loadedChunks.set(chunk.id, JSON.parse(chunk.terrainData));
-  }
-  
-  console.log(`🗺️  Loaded ${chunks.length} map chunks into RAM.`);
+  // Only load ground-level objects for collision right now
+  const spawns = await prisma.mapSpawn.findMany({ where: { plane: 0 } });
+  const objectDefs = await prisma.objectDefinition.findMany();
+
+  // 1. Create a fast lookup dictionary for Object Walkability
+  const walkabilityDict = {};
+  objectDefs.forEach(def => {
+    walkabilityDict[def.id] = def.isWalkable;
+  });
+
+  // 2. Load the base terrain tiles
+  chunks.forEach(chunk => {
+    try {
+      const tiles = JSON.parse(chunk.terrainData);
+      loadedChunks.set(chunk.id, tiles);
+    } catch (e) {
+      console.error(`Failed to parse chunk ${chunk.id}`);
+    }
+  });
+
+  // 3. Overlay the Objects: Flag tiles as unwalkable if a blocking object is there
+  let blockedCount = 0;
+  spawns.forEach(spawn => {
+    // Check our dictionary to see if this specific object blocks movement
+    if (walkabilityDict[spawn.objectDefId] === false) {
+      const chunkTiles = loadedChunks.get(spawn.chunkId);
+      
+      if (chunkTiles) {
+        // Calculate the local tile index inside the 8x8 chunk
+        const localX = spawn.x % 8;
+        const localZ = spawn.y % 8; // Database 'y' represents our 3D 'Z' axis
+        const index = (localZ * 8) + localX;
+        
+        // Flip the ground tile to act as a wall
+        if (chunkTiles[index]) {
+          chunkTiles[index].isWalkable = false;
+          blockedCount++;
+        }
+      }
+    }
+  });
+
+  console.log(`Loaded ${loadedChunks.size} chunks. Overlaid ${blockedCount} collision blocks.`);
 };
+
+// ... keep your existing saveChunkToDb function down here
 
 export const getTile = (globalX, globalY) => {
   const chunkX = Math.floor(globalX / 8);
